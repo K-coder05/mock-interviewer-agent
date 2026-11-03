@@ -17,6 +17,7 @@ from backend.agent.prep import PrepFailed
 from backend.clock import Clock, SystemClock
 from backend.config import Config, load_config
 from backend.db import Store
+from backend.feedback.generator import ReportGenerator
 from backend.runner import Runner
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
@@ -55,11 +56,14 @@ def create_app(
 ) -> FastAPI:
     config = config or load_config()
     store = Store(config.db_path)
+    model = model or AnthropicModelClient(config.api_key)
+    reports = ReportGenerator(store=store, model=model, model_id=config.models.report)
     manager = SessionManager(
         store=store,
         clock=clock or SystemClock(),
         runner=Runner(config.runner),
-        model=model or AnthropicModelClient(config.api_key),
+        model=model,
+        reports=reports,
         defaults=SessionDefaults(
             duration_min=config.default_duration_min,
             timeout_grace_s=config.timeout_grace_s,
@@ -100,6 +104,26 @@ def create_app(
             "session": record.to_public_dict(),
             "events": [e.to_dict() for e in store.events(session_id)],
         }
+
+    @app.get("/api/sessions/{session_id}/report")
+    def get_report(session_id: str) -> dict[str, Any]:
+        """The Report once ready, `{status: "generating"}` while it is being generated, else
+        the Session's status (`report_failed` -> the client offers Retry)."""
+        view = reports.view(session_id)
+        if view is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return view
+
+    @app.post("/api/sessions/{session_id}/report")
+    async def regenerate_report(session_id: str, regenerate: bool = False) -> dict[str, Any]:
+        """Rebuild the Report from the stored events; backs Retry after `report_failed`."""
+        if not regenerate:
+            raise HTTPException(status_code=400, detail="Pass regenerate=true")
+        if store.get_session(session_id) is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if not reports.start(session_id):
+            raise HTTPException(status_code=409, detail="The interview has not ended yet")
+        return {"status": "generating"}
 
     @app.websocket("/ws/sessions/{session_id}")
     async def session_socket(websocket: WebSocket, session_id: str) -> None:

@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import { InterviewPage } from "./pages/InterviewPage";
+import { ReportPage } from "./pages/ReportPage";
 import { SetupPage } from "./pages/SetupPage";
 
-type Route = { page: "setup" } | { page: "interview"; sessionId: string };
+type Route =
+  | { page: "setup" }
+  | { page: "interview"; sessionId: string }
+  | { page: "report"; sessionId: string };
 
 function parseHash(hash: string): Route {
-  const match = hash.match(/^#\/sessions\/([\w-]+)$/);
-  return match ? { page: "interview", sessionId: match[1] } : { page: "setup" };
+  const match = hash.match(/^#\/sessions\/([\w-]+)(\/report)?$/);
+  if (!match) return { page: "setup" };
+  return { page: match[2] ? "report" : "interview", sessionId: match[1] };
 }
 
 export function navigate(path: string): void {
@@ -22,6 +27,9 @@ export function App() {
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
 
+  if (route.page === "report") {
+    return <ReportPage key={route.sessionId} sessionId={route.sessionId} />;
+  }
   return route.page === "interview" ? (
     <InterviewPage key={route.sessionId} sessionId={route.sessionId} />
   ) : (

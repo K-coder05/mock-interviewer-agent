@@ -62,3 +62,19 @@ body { margin: 0; }
 .end-button { padding: 0.4rem 1rem; font: inherit; font-weight: 600; border: 1px solid #b42318; border-radius: 6px; background: white; color: #b42318; cursor: pointer; }
 .end-button:disabled { opacity: 0.5; cursor: default; }
 .ended-note { padding: 0.6rem 1rem; border-top: 1px solid #d0d5dd; color: #667085; }
+.report { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+.report button, .report-link { padding: 0.5rem 1.4rem; font: inherit; font-weight: 600; border: 0; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; text-decoration: none; }
+.report-status { margin-top: 3rem; text-align: center; font-size: 1.1rem; }
+.signal { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: baseline; }
+.signal p { flex-basis: 100%; margin: 0.3rem 0 0; }
+.signal-label { font-size: 1.5rem; font-weight: 700; }
+.signal-strong-no, .signal-no { color: #b42318; }
+.signal-lean-no, .signal-lean-hire { color: #b54708; }
+.signal-hire, .signal-strong-hire { color: #067647; }
+.summary { line-height: 1.5; }
+.rubric { width: 100%; border-collapse: collapse; background: white; }
+.rubric th, .rubric td { text-align: left; vertical-align: top; padding: 0.6rem; border-bottom: 1px solid #d0d5dd; }
+.rubric td ul { margin: 0; padding-left: 1rem; }
+.rubric .score { font: 700 1.2rem ui-monospace, Menlo, monospace; text-align: center; }
+.score-1 { color: #b42318; } .score-2 { color: #b54708; } .score-3, .score-4 { color: #067647; }
+.stamp { font: 600 0.85rem ui-monospace, Menlo, monospace; color: #1f6feb; }

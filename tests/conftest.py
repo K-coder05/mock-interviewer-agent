@@ -1,13 +1,21 @@
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
 from tests.harness import LiveSessionHarness
+from tests.report_harness import ReportHarness
 
 
 @pytest.fixture
-def harness(tmp_path: Path) -> Iterator[LiveSessionHarness]:
+async def harness(tmp_path: Path) -> AsyncIterator[LiveSessionHarness]:
     h = LiveSessionHarness(db_path=tmp_path / "test.db")
     yield h
-    h.close()
+    await h.aclose()
+
+
+@pytest.fixture
+async def reports(tmp_path: Path) -> AsyncIterator[ReportHarness]:
+    h = ReportHarness(db_path=tmp_path / "reports.db")
+    yield h
+    await h.aclose()

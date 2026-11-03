@@ -14,7 +14,7 @@ from typing import Any
 
 import anthropic
 
-from backend.agent.model import ModelError, ModelEvent, ModelRequest, TextDelta, ToolCall
+from backend.agent.model import ModelError, ModelEvent, ModelRequest, TextDelta, ToolCall, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,13 @@ class AnthropicModelClient:
             usage.cache_read_input_tokens,
             usage.cache_creation_input_tokens,
             usage.output_tokens,
+        )
+        yield Usage(
+            model=message.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+            cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
         )
         if message.stop_reason == "refusal":
             raise ModelError("model_refused", "The model declined to respond.")

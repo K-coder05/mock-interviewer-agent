@@ -98,6 +98,26 @@ class Event:
         }
 
 
+@dataclass(frozen=True)
+class ReportRecord:
+    session_id: str
+    created_at: str
+    model: str
+    metrics: dict[str, Any]
+    report: dict[str, Any]
+    usage: dict[str, Any] | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "created_at": self.created_at,
+            "model": self.model,
+            "metrics": self.metrics,
+            "report": self.report,
+            "usage": self.usage,
+        }
+
+
 class Store:
     def __init__(self, path: Path | str) -> None:
         if str(path) != ":memory:":
@@ -193,6 +213,66 @@ class Store:
                 (ended_at, session_id),
             )
         return ended_at
+
+    def set_status(self, session_id: str, status: SessionStatus) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sessions SET status = ? WHERE id = ?", (status, session_id)
+            )
+
+    def save_report(
+        self,
+        session_id: str,
+        *,
+        model: str,
+        metrics: dict[str, Any],
+        report: dict[str, Any],
+        usage: dict[str, Any] | None,
+    ) -> ReportRecord:
+        """Store the Session's Report, replacing any earlier one, and mark it `report_ready`."""
+        record = ReportRecord(
+            session_id=session_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            model=model,
+            metrics=metrics,
+            report=report,
+            usage=usage,
+        )
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO reports"
+                " (session_id, created_at, model, metrics_json, report_json, usage_json)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    record.created_at,
+                    model,
+                    json.dumps(metrics),
+                    json.dumps(report),
+                    None if usage is None else json.dumps(usage),
+                ),
+            )
+            self._conn.execute(
+                "UPDATE sessions SET status = 'report_ready' WHERE id = ?", (session_id,)
+            )
+        return record
+
+    def get_report(self, session_id: str) -> ReportRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM reports WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        usage = row["usage_json"]
+        return ReportRecord(
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+            model=row["model"],
+            metrics=json.loads(row["metrics_json"]),
+            report=json.loads(row["report_json"]),
+            usage=None if usage is None else json.loads(usage),
+        )
 
     def append_event(
         self, session_id: str, *, t_ms: int, type: str, payload: dict[str, Any]

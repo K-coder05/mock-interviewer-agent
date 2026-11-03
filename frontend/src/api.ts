@@ -66,3 +66,60 @@ export function createSession(input: CreateSessionInput): Promise<{ session_id: 
 export function getSession(id: string): Promise<{ session: SessionInfo; events: SessionEvent[] }> {
   return request(`/api/sessions/${encodeURIComponent(id)}`);
 }
+
+export interface Evidence {
+  t_ms: number;
+  quote_or_code: string;
+  comment: string;
+}
+
+export interface RubricRow {
+  dimension: string;
+  label: string;
+  weight: number;
+  score: 1 | 2 | 3 | 4;
+  evidence: Evidence[];
+  note: string | null;
+}
+
+export interface Report {
+  summary: string;
+  overall_signal: {
+    label: "Strong No" | "No" | "Lean No" | "Lean Hire" | "Hire" | "Strong Hire";
+    weighted_average: number;
+    capped: boolean;
+    rationale: string;
+  };
+  rubric: RubricRow[];
+  correctness: { executed: false; note: string; snapshot_seq: number | null; t_ms: number | null };
+}
+
+export interface ReportUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  attempts: number;
+}
+
+export type ReportView =
+  | {
+      status: "report_ready";
+      created_at: string;
+      model: string;
+      metrics: Record<string, number>;
+      report: Report;
+      usage: ReportUsage | null;
+    }
+  | { status: "generating" | "live" | "ended" | "abandoned" | "report_failed" };
+
+export function getReport(id: string): Promise<ReportView> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/report`);
+}
+
+/** Rebuild the Report from the stored events (backs Retry and Generate report). */
+export function regenerateReport(id: string): Promise<{ status: "generating" }> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/report?regenerate=true`, {
+    method: "POST",
+  });
+}

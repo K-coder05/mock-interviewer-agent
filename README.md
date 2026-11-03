@@ -34,4 +34,6 @@ make frontend    # run only the frontend
 
 Layout: `backend/` (FastAPI app, Session engine, SQLite store), `frontend/` (React + Vite +
 Monaco), `tests/` (pytest; `tests/harness.py` is the Live Session harness: message driver,
-fake clock, scripted fake model).
+fake clock, scripted fake model; `tests/report_harness.py` is the Report seam harness: event-log
+fixtures, a scripted `submit_report`, and the Report generator). The Report lives in
+`backend/feedback/` (rubric and Overall Signal, prompt, validation, background generator).

@@ -23,6 +23,7 @@ from backend.agent.prep import prepare_problem_brief
 from backend.clock import Clock
 from backend.config import ModelIds
 from backend.db import Event, SessionRecord, Store
+from backend.feedback.generator import ReportGenerator
 from backend.ids import new_id
 from backend.runner import Runner
 
@@ -73,9 +74,11 @@ class LiveSession:
         clock: Clock,
         runner: Runner,
         model: ModelClient,
+        on_ended: Callable[[str], object] | None = None,
         timer_poll_s: float | None = 1.0,
     ) -> None:
         self.record = record
+        self._on_ended = on_ended
         self._store = store
         self._clock = clock
         self._runner = runner
@@ -182,7 +185,8 @@ class LiveSession:
 
     async def end(self, reason: Literal["user", "timeout"]) -> None:
         """End the Session: the Interviewer closes politely (no verdict), then `session_ended`
-        is logged with the final code and the status becomes `ended`. Idempotent."""
+        is logged with the final code, the status becomes `ended` and Report generation starts.
+        Idempotent."""
         if self._ending:
             return
         self._ending = True
@@ -202,6 +206,8 @@ class LiveSession:
         self._store.end_session(self.id)
         if (record := self._store.get_session(self.id)) is not None:
             self.record = record
+        if self._on_ended is not None:
+            self._on_ended(self.id)  # before `session_ended` is sent, so the Report reads generating
         await self._emit_timer("ended")
         await self._emit({"type": "session_ended", "reason": reason})
 
@@ -443,10 +449,12 @@ class SessionManager:
         clock: Clock,
         runner: Runner,
         model: ModelClient,
+        reports: ReportGenerator,
         defaults: SessionDefaults,
         timer_poll_s: float | None = 1.0,
     ) -> None:
         self._store = store
+        self._reports = reports
         self._clock = clock
         self._runner = runner
         self._model = model
@@ -497,6 +505,7 @@ class SessionManager:
             clock=self._clock,
             runner=self._runner,
             model=self._model,
+            on_ended=self._reports.start,
             timer_poll_s=self._timer_poll_s,
         )
         live.begin()
@@ -509,3 +518,4 @@ class SessionManager:
     async def close(self) -> None:
         for live in self._live.values():
             await live.close()
+        await self._reports.close()

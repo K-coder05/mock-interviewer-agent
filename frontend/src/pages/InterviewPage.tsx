@@ -104,7 +104,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
           receivedAt: performance.now(),
         });
       } else if (message.type === "session_ended") {
-        setEnded(true);
+        setEnded(true); // Report generation has started; the top bar links to it
       } else if (message.type === "clarification") {
         const { question, answer, by } = message;
         setClarifications((list) => [...list, { question, answer, by }]);
@@ -161,9 +161,15 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         <strong>{session.title}</strong>
         {error && <span className="error">{error}</span>}
         <Timer timer={ended ? { state: "ended", remainingMs: 0, receivedAt: 0 } : timer} />
-        <button type="button" className="end-button" disabled={ended} onClick={endInterview}>
-          End Interview
-        </button>
+        {ended ? (
+          <a className="report-link" href={`#/sessions/${session.id}/report`}>
+            View report
+          </a>
+        ) : (
+          <button type="button" className="end-button" onClick={endInterview}>
+            End Interview
+          </button>
+        )}
       </header>
       <section className="pane problem">
         <ReactMarkdown>{session.problem_md}</ReactMarkdown>
@@ -203,7 +209,11 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       </section>
       <section className="pane conversation">
         <Conversation entries={transcript} onSend={say} disabled={ended} />
-        {ended && <p className="ended-note">The interview has ended.</p>}
+        {ended && (
+          <p className="ended-note">
+            The interview has ended. <a href={`#/sessions/${session.id}/report`}>View report</a>
+          </p>
+        )}
       </section>
     </div>
   );

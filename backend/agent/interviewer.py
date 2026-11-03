@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from backend.agent.context import build_turn_message
-from backend.agent.model import ModelClient, ModelRequest, TextDelta
+from backend.agent.model import ModelClient, ModelRequest, TextDelta, ToolCall
 from backend.db import Event
 
 logger = logging.getLogger(__name__)
@@ -110,6 +110,8 @@ class Interviewer:
                 if event.text:
                     text.append(event.text)
                     await on_text(event.text)
+            elif not isinstance(event, ToolCall):
+                continue  # Usage: logged by the client
             elif event.name == RECORD_CLARIFICATION["name"]:
                 if (clarification := _clarification(event.input)) is not None:
                     clarifications.append(clarification)

@@ -1,8 +1,8 @@
-"""The model client interface shared by problem prep, the Interviewer and (later) the Report.
+"""The model client interface shared by problem prep, the Interviewer and the Report.
 
 Callers depend only on this protocol, so tests inject a scripted fake and production injects
 `AnthropicModelClient` (`backend/agent/anthropic_client.py`). A stream yields text deltas as they
-arrive; tool calls are yielded once the model's turn is complete. Callers own their tool
+arrive; once the model's turn is complete, its Usage and then its tool calls are yielded. Callers own their tool
 definitions and must validate tool inputs (model output is untrusted).
 """
 
@@ -24,7 +24,19 @@ class ToolCall:
     input: dict[str, Any]
 
 
-ModelEvent = TextDelta | ToolCall
+@dataclass(frozen=True)
+class Usage:
+    """Token usage of one completed call, yielded after the text and before any tool calls.
+    `model` is the model that actually served the call (a refusal fallback may differ)."""
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+
+ModelEvent = TextDelta | Usage | ToolCall
 
 
 @dataclass(frozen=True)
