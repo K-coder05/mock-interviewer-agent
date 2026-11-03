@@ -389,6 +389,8 @@ class LiveSession:
         }
         if lead.proactive and (held := self._triggers.suppression(self._now_ms())) is not None:
             self._append("trigger", {**logged, "outcome": "suppressed", "suppressed_by": held})
+            for trigger in (lead, *others):
+                self._triggers.hold_back(trigger)
             return
         try:
             decision = await self._decide(lead, others)
@@ -438,7 +440,7 @@ class LiveSession:
                 await self._emit({"type": "interviewer_cancel", "msg_id": msg_id})
             raise
         if trigger.reason == "session_start":
-            await self._start_timer()  # even a greeting with no speech starts the interview
+            await self._start_timer()  # even a greeting with no speech starts the Session timer
         if decision.text:
             self._append_utterance("interviewer", decision.text, start, msg_id=msg_id)
             await self._emit(

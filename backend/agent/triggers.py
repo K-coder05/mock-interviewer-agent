@@ -9,8 +9,8 @@ order as events are written) and keeps only what it needs to decide:
 - `suppression(now_ms)`: whether the guardrails hold back an unprompted (proactive) utterance
   right now: the cooldown after the Interviewer last spoke, and the cap on Nudges per 5 minutes.
 
-Everything is derived from events (including the `trigger` events the Session logs), so a
-rehydrated engine replaying a stored log ends up in the same state. The Session engine owns the
+Everything is derived from events (including the `trigger` events the Session logs), never from
+Session internals. The Session engine owns the
 reply queue: it coalesces pending Triggers into one decision call (`coalesce`), checks the
 guardrails when the call is about to start and logs a `trigger` event with the outcome.
 """
@@ -25,35 +25,50 @@ from backend.db import Event
 from backend.phases import FIRST_PHASE, OVERRUN_MIN, PHASES
 
 TriggerReason = Literal[
+    "session_end",
+    "time_up",
     "session_start",
     "typed_message",
     "typed_message_unanswered",
-    "time_up",
-    "session_end",
     "time",
     "phase_overrun",
     "silence",
 ]
 TimeCheckpoint = Literal["half_time_no_code", "10_min_left", "5_min_left"]
 Suppression = Literal["cooldown", "cap"]
-Outcome = Literal["spoke", "silent", "suppressed"]
 
-# Triggers that are not unprompted speech: the guardrails never hold them back.
-EXEMPT: frozenset[TriggerReason] = frozenset(
-    {"session_start", "typed_message", "typed_message_unanswered", "time_up", "session_end"}
-)
-# When Triggers coalesce into one call, the first reason in this order leads it. Every exempt
-# reason comes before every proactive one, so a batch holding any exempt Trigger is exempt.
-PRIORITY: tuple[TriggerReason, ...] = (
-    "session_end",
-    "time_up",
-    "session_start",
-    "typed_message",
-    "typed_message_unanswered",
-    "time",
-    "phase_overrun",
-    "silence",
-)
+
+@dataclass(frozen=True)
+class _Reason:
+    exempt: bool
+    """Not unprompted speech: the guardrails never hold it back."""
+    description: str
+    """How the turn message explains it to the Interviewer."""
+
+
+# Every Trigger reason, in coalescing priority: when Triggers merge into one call, the first
+# reason in this order leads it. Every exempt reason comes before every proactive one, so a batch
+# holding any exempt Trigger is exempt.
+REASONS: dict[TriggerReason, _Reason] = {
+    "session_end": _Reason(True, "the Session is over"),
+    "time_up": _Reason(True, "time has run out"),
+    "session_start": _Reason(True, "the Session is starting"),
+    "typed_message": _Reason(True, "the candidate typed a message to you"),
+    "typed_message_unanswered": _Reason(
+        True, "your previous turn only called tools; reply to the candidate now"
+    ),
+    "time": _Reason(False, "a time checkpoint"),
+    "phase_overrun": _Reason(False, "the current Phase has run over its time guide"),
+    "silence": _Reason(
+        False, "the candidate has neither spoken nor touched the code for a while"
+    ),
+}
+_PRIORITY = list(REASONS)
+CHECKPOINTS: dict[TimeCheckpoint, str] = {
+    "half_time_no_code": "half the time has passed and the candidate has written no code yet",
+    "10_min_left": "10 minutes are left",
+    "5_min_left": "5 minutes are left",
+}
 CAP_WINDOW_MS = 5 * 60_000
 # Time-left checkpoints, latest first: when several are crossed at once only the latest fires.
 TIME_LEFT: tuple[tuple[TimeCheckpoint, int], ...] = (
@@ -62,19 +77,6 @@ TIME_LEFT: tuple[tuple[TimeCheckpoint, int], ...] = (
 )
 DEFAULT_SILENCE_S: dict[str, float] = {"clarify": 45, "approach": 45, "implement": 90, "test": 60}
 
-_DESCRIPTIONS: dict[str, str] = {
-    "session_start": "the interview is starting",
-    "typed_message": "the candidate typed a message to you",
-    "typed_message_unanswered": "your previous turn only called tools; reply to the candidate now",
-    "time_up": "time has run out",
-    "session_end": "the interview is over",
-    "silence": "the candidate has neither spoken nor touched the code for a while",
-    "phase_overrun": "the current Phase has run over its time guide",
-    "time:half_time_no_code": "half the time has passed and the candidate has written no code yet",
-    "time:10_min_left": "10 minutes are left",
-    "time:5_min_left": "5 minutes are left",
-}
-
 
 @dataclass(frozen=True)
 class Trigger:
@@ -82,17 +84,18 @@ class Trigger:
 
     reason: TriggerReason
     detail: str | None = None
-    """Which occasion, for reasons that have several (a time checkpoint)."""
+    """Which occasion: the checkpoint of a `time` Trigger, the Phase of `silence`/`phase_overrun`."""
 
     @property
     def proactive(self) -> bool:
         """Unprompted: any speech it leads to is a Nudge and subject to the guardrails."""
-        return self.reason not in EXEMPT
+        return not REASONS[self.reason].exempt
 
     def describe(self) -> str:
-        key = f"{self.reason}:{self.detail}" if self.detail else self.reason
-        label = f"{self.reason} ({self.detail})" if self.detail else self.reason
-        return f"{label}: {_DESCRIPTIONS.get(key, _DESCRIPTIONS.get(self.reason, ''))}".rstrip(": ")
+        if self.detail is None:
+            return f"{self.reason}: {REASONS[self.reason].description}"
+        description = CHECKPOINTS.get(self.detail, REASONS[self.reason].description)  # type: ignore[call-overload]
+        return f"{self.reason} ({self.detail}): {description}"
 
     def to_payload(self) -> dict[str, Any]:
         return {"reason": self.reason, **({"detail": self.detail} if self.detail else {})}
@@ -100,11 +103,11 @@ class Trigger:
 
 def coalesce(triggers: Iterable[Trigger]) -> tuple[Trigger, list[Trigger]]:
     """Merge Triggers that arrived while a call was in flight into one call: the leading Trigger
-    (by PRIORITY) and the others (duplicates dropped), in arrival order."""
+    (by REASONS order) and the others (duplicates dropped), in arrival order."""
     unique = list(dict.fromkeys(triggers))
     if not unique:
         raise ValueError("nothing to coalesce")
-    lead = min(unique, key=lambda t: PRIORITY.index(t.reason))
+    lead = min(unique, key=lambda t: _PRIORITY.index(t.reason))
     return lead, [t for t in unique if t != lead]
 
 
@@ -164,6 +167,7 @@ class TriggerEngine:
         self._silence_open = True  # no silence Trigger has fired since the last activity
         self._checkpoints: set[TimeCheckpoint] = set()
         self._nudges_ms: list[int] = []
+        self._held_back: list[Trigger] = []  # time/overrun Triggers waiting for the guardrails
 
     def observe(self, event: Event) -> None:
         p = event.payload
@@ -192,11 +196,27 @@ class TriggerEngine:
         before the timer starts or once time is up."""
         if self._timer_started_ms is None or self._stopped:
             return []
-        return [
+        fresh = [
             *self._time_checkpoints(now_ms),
             *self._phase_overrun(now_ms),
             *self._silence(now_ms),
         ]
+        # A newer checkpoint supersedes a held-back one; an overrun is moot once the Phase moved.
+        if any(t.reason == "time" for t in fresh):
+            self._held_back = [t for t in self._held_back if t.reason != "time"]
+        self._held_back = [
+            t for t in self._held_back if t.reason != "phase_overrun" or t.detail == self._phase
+        ]
+        retried: list[Trigger] = []
+        if self._held_back and self.suppression(now_ms) is None:
+            retried, self._held_back = self._held_back, []
+        return [*retried, *fresh]
+
+    def hold_back(self, trigger: Trigger) -> None:
+        """A guardrail suppressed `trigger`. Time checkpoints and Phase overruns are retried once
+        the guardrails allow; a silence is not (one Nudge per silence)."""
+        if trigger.reason in ("time", "phase_overrun") and trigger not in self._held_back:
+            self._held_back.append(trigger)
 
     def suppression(self, now_ms: int) -> Suppression | None:
         """Which guardrail holds back an unprompted utterance now, if any."""

@@ -212,7 +212,7 @@ class LiveSessionHarness:
         assert live is not None
         await live.tick()
         if wait:
-            await live.wait_for_interviewer()
+            await self.wait_for_interviewer(session_id)
 
     async def wait_for_interviewer(self, session_id: str) -> None:
         live = self.manager.live(session_id)

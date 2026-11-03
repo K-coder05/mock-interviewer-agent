@@ -167,7 +167,7 @@ async def test_no_half_time_checkpoint_once_code_is_written(harness: LiveSession
     assert [t["reason"] for t in _triggers(harness, session_id)] == ["silence"]
 
 
-async def test_a_nudge_inside_the_cooldown_is_suppressed_and_logged(
+async def test_a_nudge_inside_the_cooldown_is_suppressed_logged_and_a_checkpoint_retried(
     harness: LiveSessionHarness,
 ) -> None:
     session_id = await _connected(harness, duration_min=30)
@@ -188,6 +188,18 @@ async def test_a_nudge_inside_the_cooldown_is_suppressed_and_logged(
         "suppressed_by": "cooldown",
     }
     assert len(harness.model.requests) == n_requests
+
+    # a held-back checkpoint is retried once the cooldown is over (a silence would not be)
+    await harness.elapse(session_id, 14)
+    assert len(harness.model.requests) == n_requests
+    harness.model.script("About ten minutes left. How do you want to use them?")
+    await harness.elapse(session_id, 1)
+    assert _triggers(harness, session_id)[-1] == {
+        "reason": "time",
+        "detail": "10_min_left",
+        "proactive": True,
+        "outcome": "spoke",
+    }
 
 
 async def test_at_most_three_nudges_per_five_minutes(harness: LiveSessionHarness) -> None:
