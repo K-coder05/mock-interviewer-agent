@@ -14,6 +14,7 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal, get_args
 
 from backend.agent.context import Style, build_system_prompt
@@ -37,6 +38,8 @@ Channel = Literal["voice", "text"]
 CHANNELS: tuple[Channel, ...] = get_args(Channel)
 ServerMessage = dict[str, Any]
 Listener = Callable[[ServerMessage], Awaitable[None]]
+TimerState = Literal["running", "warning", "time_up", "ended"]
+PRIVATE_EVENTS = frozenset({"interviewer_note"})  # never sent to the client live
 
 CLOSING_TIMEOUT_S = 30
 PASTE_TEXT_CAP = 5_000  # stored text of a paste event; `length` keeps the real size
@@ -51,6 +54,7 @@ class SessionDefaults:
     timeout_grace_s: int
     models: ModelIds
     user_phase_lock_s: int = 120
+    abandon_after_idle_min: int = 10
     triggers: TriggerConfig = dataclasses.field(default_factory=TriggerConfig)
     voice: VoiceConfig = dataclasses.field(default_factory=VoiceConfig)
 
@@ -61,6 +65,10 @@ def _title_of(problem_md: str) -> str:
         if stripped:
             return stripped[:120]
     return "Untitled problem"
+
+
+def _wall_ms(iso: str) -> int:
+    return round(datetime.fromisoformat(iso).timestamp() * 1000)
 
 
 def _char_changes(old: str, new: str) -> tuple[int, int]:
@@ -154,15 +162,72 @@ class LiveSession:
         if record.starter_code is not None:
             self._snapshot(record.starter_code, t_ms=0)
 
+    def resume(self) -> None:
+        """Rebuild the Session from its event log after a backend restart. Time carries on from
+        the wall clock: the downtime counts against the timer, and new events are timed after
+        it. Triggers that came due while the backend was down are dropped, not fired late."""
+        events = self._store.events(self.id)
+        elapsed = self._clock.wall_ms() - _wall_ms(self.record.created_at)
+        elapsed = max(elapsed, events[-1].t_ms if events else 0)
+        self._started_at_ms = self._clock.monotonic_ms() - elapsed
+        for event in events:
+            self._triggers.observe(event)
+            if event.type == "code_snapshot":
+                self._code, self._snapshot_seq = str(event.payload["code"]), event.seq
+            elif event.type == "timer_started":
+                self._timer_started_ms = self._started_at_ms + event.t_ms
+            elif event.type == "timer_warning":
+                self._warned = True
+            elif event.type == "time_up":
+                self._time_up = True
+            elif event.type == "trigger" and event.payload.get("reason") == "session_start":
+                self._greeted = True
+        self._greeted = self._greeted or self._timer_started_ms is not None
+        self._triggers.resumed(self._now_ms())
+        if self._timer_started_ms is not None:
+            self._start_polling()
+
+    async def attach(self, listener: Listener, *, last_seq: int | None) -> Callable[[], None]:
+        """A client (re)connected having seen the event log up to `last_seq`: it first gets a
+        `replay` of the events it missed (private ones left out) and the current timer state,
+        then every server message from here on, in order. Returns the unsubscribe function.
+        The first client to connect starts the interview."""
+        # Read the log and subscribe with no await in between: nothing slips through the gap.
+        missed = [] if last_seq is None else self._store.events(self.id, after_seq=last_seq)
+        backlog: list[ServerMessage] | None = []
+
+        async def deliver(message: ServerMessage) -> None:
+            if backlog is not None:  # held until the replay has gone out
+                backlog.append(message)
+            else:
+                await listener(message)
+
+        unsubscribe = self.subscribe(deliver)
+        try:
+            await listener(
+                {
+                    "type": "replay",
+                    "events": [e.to_dict() for e in missed if e.type not in PRIVATE_EVENTS],
+                    "last_seq": missed[-1].seq if missed else last_seq,
+                }
+            )
+            if self._timer_started_ms is not None or self._ending:
+                await listener(self._timer_message(self._timer_state()))
+            while backlog:
+                await listener(backlog.pop(0))
+        except BaseException:
+            unsubscribe()
+            raise
+        backlog = None
+        self.client_connected()
+        return unsubscribe
+
     def client_connected(self) -> None:
         """A client attached. The first one starts the interview: the Interviewer greets the
         Candidate and restates the problem."""
         if not self._greeted:
             self._greeted = True
             self._request_reply(Trigger("session_start"))
-        elif self._timer_started_ms is not None or self._ending:
-            # a reconnecting client needs the current timer state
-            asyncio.create_task(self._emit_timer(self._timer_state()))
 
     async def handle(self, message: dict[str, Any]) -> None:
         """Process one client message (the WebSocket payload)."""
@@ -226,14 +291,14 @@ class LiveSession:
                 logger.warning("closing reply timed out for Session %s", self.id)
                 if self._reply_task is not None:
                     self._reply_task.cancel()
-        self._append("session_ended", {"reason": reason, "final_code": final_code})
+        ended = self._append("session_ended", {"reason": reason, "final_code": final_code})
         self._store.end_session(self.id)
         if (record := self._store.get_session(self.id)) is not None:
             self.record = record
         if self._on_ended is not None:
             self._on_ended(self.id)  # before `session_ended` is sent, so the Report reads generating
         await self._emit_timer("ended")
-        await self._emit({"type": "session_ended", "reason": reason})
+        await self._emit({"type": "session_ended", "reason": reason, "seq": ended.seq})
 
     async def close(self) -> None:
         """Stop background tasks (timer loop, in-flight Run and reply)."""
@@ -248,21 +313,22 @@ class LiveSession:
         elapsed = self._clock.monotonic_ms() - self._timer_started_ms
         return self._duration_ms - elapsed
 
-    def _timer_state(self) -> Literal["running", "warning", "time_up", "ended"]:
+    def _timer_state(self) -> TimerState:
         if self._ending:
             return "ended"
         return "time_up" if self._time_up else "warning" if self._warned else "running"
 
-    async def _emit_timer(self, state: Literal["running", "warning", "time_up", "ended"]) -> None:
+    def _timer_message(self, state: TimerState) -> ServerMessage:
         remaining = 0 if state == "ended" else max(0, self._remaining_ms())
-        await self._emit(
-            {
-                "type": "timer",
-                "state": state,
-                "remaining_ms": remaining,
-                "duration_ms": self._duration_ms,
-            }
-        )
+        return {
+            "type": "timer",
+            "state": state,
+            "remaining_ms": remaining,
+            "duration_ms": self._duration_ms,
+        }
+
+    async def _emit_timer(self, state: TimerState) -> None:
+        await self._emit(self._timer_message(state))
 
     async def _start_timer(self) -> None:
         """The countdown starts when the Interviewer's greeting begins streaming."""
@@ -271,6 +337,9 @@ class LiveSession:
         self._timer_started_ms = self._clock.monotonic_ms()
         self._append("timer_started", {"duration_ms": self._duration_ms})
         await self._emit_timer("running")
+        self._start_polling()
+
+    def _start_polling(self) -> None:
         if self._timer_poll_s is not None:
             self._timer_task = asyncio.create_task(self._poll_timer(self._timer_poll_s))
 
@@ -368,8 +437,8 @@ class LiveSession:
         ):
             logger.info("ignoring Interviewer set_phase(%s) during the user lock", phase)
             return
-        self._append("phase_changed", {"from": state.phase, "to": phase, "by": by})
-        await self._emit({"type": "phase", "phase": phase, "by": by})
+        event = self._append("phase_changed", {"from": state.phase, "to": phase, "by": by})
+        await self._emit({"type": "phase", "phase": phase, "by": by, "seq": event.seq})
 
     async def _on_utterance(self, message: dict[str, Any]) -> None:
         """A typed message (always gets a reply) or a final spoken utterance (heard; the
@@ -502,9 +571,14 @@ class LiveSession:
         if trigger.reason == "session_start":
             await self._start_timer()  # even a greeting with no speech starts the Session timer
         if decision.text:
-            self._append_utterance("interviewer", decision.text, start, msg_id=msg_id)
+            said = self._append_utterance("interviewer", decision.text, start, msg_id=msg_id)
             await self._emit(
-                {"type": "interviewer_done", "msg_id": msg_id, "full_text": decision.text}
+                {
+                    "type": "interviewer_done",
+                    "msg_id": msg_id,
+                    "full_text": decision.text,
+                    "seq": said.seq,
+                }
             )
         elif streamed:  # whitespace only: nothing to keep
             await self._emit({"type": "interviewer_cancel", "msg_id": msg_id})
@@ -565,8 +639,8 @@ class LiveSession:
             await self._emit_error("run_failed", "The Runner failed to execute your code")
             return
         payload = {"snapshot_seq": snapshot_seq, "stdin": stdin, **dataclasses.asdict(result)}
-        self._append("run", payload)
-        await self._emit({"type": "run_result", **payload})
+        event = self._append("run", payload)
+        await self._emit({"type": "run_result", **payload, "seq": event.seq})
 
     def _snapshot(self, code: str, *, t_ms: int | None = None) -> Event | None:
         """Record `code` as a code snapshot unless it equals the last one (dedup)."""
@@ -654,8 +728,44 @@ class SessionManager:
             private_notes=notes,
             settings=settings,
             problem_brief=brief,
+            created_at=datetime.fromtimestamp(self._clock.wall_ms() / 1000, timezone.utc),
         )
-        live = LiveSession(
+        live = self._live[record.id] = self._live_session(record)
+        live.begin()
+        return live
+
+    def live(self, session_id: str) -> LiveSession | None:
+        """The Session's LiveSession. A `live` Session that this process doesn't hold (the
+        backend restarted under it) is rebuilt from its event log."""
+        if (live := self._live.get(session_id)) is not None:
+            return live
+        record = self._store.get_session(session_id)
+        if record is None or record.status != "live":
+            return None
+        live = self._live[session_id] = self._live_session(record)
+        live.resume()
+        return live
+
+    def abandon_stale(self) -> list[str]:
+        """Startup: every `live` Session with no events in the configured idle window becomes
+        `abandoned` (it never received an end; it can still be reported on, when asked).
+        Returns their ids."""
+        now = self._clock.wall_ms()
+        idle_ms = self._defaults.abandon_after_idle_min * 60_000
+        abandoned = []
+        for record in self._store.list_sessions():
+            if record.status != "live" or record.id in self._live:
+                continue
+            last_ms = _wall_ms(record.created_at) + (self._store.last_event_t_ms(record.id) or 0)
+            if now - last_ms >= idle_ms:
+                self._store.set_status(record.id, "abandoned")
+                abandoned.append(record.id)
+        if abandoned:
+            logger.info("marked %d stale Session(s) abandoned", len(abandoned))
+        return abandoned
+
+    def _live_session(self, record: SessionRecord) -> LiveSession:
+        return LiveSession(
             record,
             store=self._store,
             clock=self._clock,
@@ -664,12 +774,6 @@ class SessionManager:
             on_ended=self._reports.start,
             timer_poll_s=self._timer_poll_s,
         )
-        live.begin()
-        self._live[record.id] = live
-        return live
-
-    def live(self, session_id: str) -> LiveSession | None:
-        return self._live.get(session_id)
 
     async def close(self) -> None:
         for live in self._live.values():

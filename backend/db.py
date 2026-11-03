@@ -140,10 +140,11 @@ class Store:
         private_notes: str | None,
         settings: dict[str, Any],
         problem_brief: dict[str, Any] | None,
+        created_at: datetime | None = None,
     ) -> SessionRecord:
         record = SessionRecord(
             id=new_id("ses"),
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=(created_at or datetime.now(timezone.utc)).isoformat(),
             ended_at=None,
             title=title,
             problem_md=problem_md,
@@ -295,6 +296,14 @@ class Store:
                 (event.id, session_id, event.seq, t_ms, type, json.dumps(payload)),
             )
         return event
+
+    def last_event_t_ms(self, session_id: str) -> int | None:
+        """The `t_ms` of the Session's latest event, if it has any."""
+        with self._lock:
+            (t_ms,) = self._conn.execute(
+                "SELECT MAX(t_ms) FROM events WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        return None if t_ms is None else int(t_ms)
 
     def events(self, session_id: str, *, after_seq: int = 0) -> list[Event]:
         with self._lock:

@@ -28,8 +28,9 @@ async def test_the_interviewer_moves_the_phase_and_the_event_records_from_to_and
     await harness.say(session_id, "I think a hash map works.")
 
     assert _changes(harness, session_id) == [("clarify", "approach", "agent")]
+    [changed] = harness.events(session_id, "phase_changed")
     assert harness.messages(session_id, "phase") == [
-        {"type": "phase", "phase": "approach", "by": "agent"}
+        {"type": "phase", "phase": "approach", "by": "agent", "seq": changed.seq}
     ]
 
 

@@ -322,6 +322,20 @@ class TriggerEngine:
         if _is_code_activity(event):
             self._last_code_activity_ms = max(self._last_code_activity_ms, event.t_ms)
 
+    def resumed(self, now_ms: int) -> None:
+        """The Session was rebuilt from its log after a backend restart (every event observed).
+        What came due while the backend was down is moot: past time checkpoints, a Phase
+        overrun, a Run's reaction and a coding pause are treated as handled, and the silence
+        counts from now (the Candidate may have been talking to no one)."""
+        if self._timer_started_ms is not None:
+            self._time_checkpoints(now_ms)  # marks every crossed checkpoint fired
+        self._phase_overrun(now_ms)  # marks an overrun of the current Phase fired
+        self._run_reaction = None
+        self._pause_checked_ms = self._last_code_ms
+        self._pause_base = self._code
+        self._last_activity_ms = self._last_code_activity_ms = now_ms
+        self._silence_open = True
+
     def set_speaking(self, active: bool, now_ms: int) -> None:
         """The Candidate's interim speech (`active`), or its end. Speech counts for
         SPEAKING_WINDOW_MS after the last interim result, so a lost `active: false` can't block

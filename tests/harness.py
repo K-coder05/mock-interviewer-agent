@@ -57,16 +57,26 @@ DEFAULT_BRIEF: ProblemBrief = {
 }
 
 
-class FakeClock:
-    """`tick_per_read_ms` > 0 makes every read advance time, simulating work taking real time."""
+WALL_START_MS = 1_790_000_000_000  # an arbitrary wall-clock reading (late 2026)
 
-    def __init__(self, start_ms: int = 1_000_000, tick_per_read_ms: int = 0) -> None:
+
+class FakeClock:
+    """`tick_per_read_ms` > 0 makes every read advance time, simulating work taking real time.
+    The wall clock moves with the monotonic one, from `wall_start_ms`."""
+
+    def __init__(
+        self, start_ms: int = 1_000_000, tick_per_read_ms: int = 0, wall_start_ms: int = WALL_START_MS
+    ) -> None:
         self._now_ms = start_ms
+        self._wall_offset_ms = wall_start_ms - start_ms
         self.tick_per_read_ms = tick_per_read_ms
 
     def monotonic_ms(self) -> int:
         self._now_ms += self.tick_per_read_ms
         return self._now_ms
+
+    def wall_ms(self) -> int:
+        return self._now_ms + self._wall_offset_ms
 
     def advance(self, seconds: float) -> None:
         if seconds < 0:
@@ -121,19 +131,32 @@ class LiveSessionHarness:
         self.clock = FakeClock()
         self.model = ScriptedModel()
         self.store = Store(db_path)
-        self.reports = ReportGenerator(
-            store=self.store, model=self.model, model_id=DEFAULT_MODELS.report
-        )
-        self.manager = SessionManager(
+        self._runner = runner or Runner(RunnerConfig(timeout_s=5))
+        self.reports, self.manager = self._backend()
+        self.sent: dict[str, list[ServerMessage]] = {}
+
+    def _backend(self) -> tuple[ReportGenerator, SessionManager]:
+        reports = ReportGenerator(store=self.store, model=self.model, model_id=DEFAULT_MODELS.report)
+        manager = SessionManager(
             store=self.store,
             clock=self.clock,
-            runner=runner or Runner(RunnerConfig(timeout_s=5)),
+            runner=self._runner,
             model=self.model,
-            reports=self.reports,
+            reports=reports,
             defaults=SessionDefaults(duration_min=45, timeout_grace_s=60, models=DEFAULT_MODELS),
             timer_poll_s=None,  # tests drive the timer with `elapse` instead of a polling loop
         )
-        self.sent: dict[str, list[ServerMessage]] = {}
+        return reports, manager
+
+    async def restart(self, *, downtime_s: float) -> None:
+        """The backend stops (in-memory Sessions and tasks are gone), stays down for
+        `downtime_s` of wall-clock time and starts again on the same database: a fresh
+        monotonic clock origin, and startup marks stale live Sessions abandoned."""
+        await self.manager.close()
+        wall_ms = self.clock.wall_ms() + round(downtime_s * 1000)
+        self.clock = FakeClock(start_ms=50_000, wall_start_ms=wall_ms)
+        self.reports, self.manager = self._backend()
+        self.manager.abandon_stale()
 
     async def aclose(self) -> None:
         await self.manager.close()  # also stops in-flight Report generation
@@ -187,6 +210,21 @@ class LiveSessionHarness:
         assert live is not None
         live.client_connected()
         await live.wait_for_interviewer()
+
+    async def reconnect(self, session_id: str, *, last_seq: int) -> list[ServerMessage]:
+        """A client (re)connects having seen the log up to `last_seq`, as the WebSocket does;
+        returns the messages it received on connecting (the replay, then the timer state)."""
+        live = self.manager.live(session_id)
+        assert live is not None, f"no live Session {session_id}"
+        received: list[ServerMessage] = []
+
+        async def capture(message: ServerMessage) -> None:
+            received.append(message)
+
+        unsubscribe = await live.attach(capture, last_seq=last_seq)
+        await live.wait_for_interviewer()
+        unsubscribe()
+        return received
 
     async def say(self, session_id: str, text: str) -> None:
         """Type a message to the Interviewer and wait for its streamed reply to finish."""

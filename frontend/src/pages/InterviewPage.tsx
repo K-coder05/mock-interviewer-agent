@@ -1,12 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { getSession, SessionEvent, SessionInfo } from "../api";
+import { getSession, SessionInfo } from "../api";
 import { CodeSync } from "../codeSync";
 import { CodeEditor } from "../components/CodeEditor";
 import { Console } from "../components/Console";
 import { Conversation, TranscriptEntry } from "../components/Conversation";
 import { Timer, TimerSnapshot } from "../components/Timer";
-import { Clarification, Phase, PHASE_LABELS, PHASES, RunResult, SessionSocket } from "../ws";
+import {
+  clarificationsFrom,
+  codeFrom,
+  lastRunFrom,
+  lastSeqOf,
+  mergeUtterances,
+  mutedFrom,
+  phaseFrom,
+} from "../sessionLog";
+import {
+  Clarification,
+  ConnectionState,
+  Phase,
+  PHASE_LABELS,
+  PHASES,
+  RunResult,
+  SessionSocket,
+} from "../ws";
 import { isEcho } from "../voice/echoGuard";
 import { webSpeechSupported, WebSpeechProvider } from "../voice/speechProvider";
 import { SentenceTts, ttsEnabled } from "../voice/tts";
@@ -34,40 +51,10 @@ function storeInterviewerMuted(muted: boolean): void {
   }
 }
 
-function transcriptFrom(events: SessionEvent[]): TranscriptEntry[] {
-  return events
-    .filter((e) => e.type === "utterance")
-    .map((e) => ({
-      key: e.id,
-      speaker: e.payload.speaker === "interviewer" ? "interviewer" : "user",
-      text: String(e.payload.text),
-    }));
-}
-
-function phaseFrom(events: SessionEvent[]): Phase {
-  let phase: Phase = "clarify";
-  for (const e of events) {
-    if (e.type === "phase_changed" && PHASES.includes(e.payload.to as Phase)) {
-      phase = e.payload.to as Phase;
-    }
-  }
-  return phase;
-}
-
-// A reload keeps the mic as the Session last logged it.
-function mutedFrom(events: SessionEvent[]): boolean {
-  const last = events.filter((e) => e.type === "mic_muted" || e.type === "mic_unmuted").pop();
-  return last?.type === "mic_muted";
-}
-
-function clarificationsFrom(events: SessionEvent[]): Clarification[] {
-  return events
-    .filter((e) => e.type === "clarification")
-    .map((e) => e.payload as unknown as Clarification);
-}
-
 export function InterviewPage({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [initialCode, setInitialCode] = useState("");
+  const [connection, setConnection] = useState<ConnectionState>("open");
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
@@ -89,6 +76,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
   const bufferRef = useRef("");
   const syncRef = useRef<CodeSync | null>(null);
   const socketRef = useRef<SessionSocket | null>(null);
+  const lastSeqRef = useRef(0); // the last event seq this page has seen, for a reconnect
   const ttsRef = useRef<SentenceTts | null>(null);
   const interviewerMutedRef = useRef(interviewerMuted); // read when the TTS is created
   const ttsAvailable = ttsEnabled(session?.settings.voice);
@@ -99,10 +87,14 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     getSession(sessionId)
       .then(({ session, events }) => {
         if (cancelled) return;
-        setTranscript(transcriptFrom(events));
+        // A reload resumes where the Session is: transcript, code, last Run, Phase, mic.
+        lastSeqRef.current = lastSeqOf(events);
+        setTranscript(mergeUtterances([], events));
         setClarifications(clarificationsFrom(events));
         setPhase(phaseFrom(events));
-        setMuted(mutedFrom(events));
+        setMuted(mutedFrom(events) ?? false);
+        setResult(lastRunFrom(events) ?? null);
+        setInitialCode(codeFrom(events) ?? session.starter_code ?? "");
         setEnded(session.status !== "live");
         setSession(session);
       })
@@ -114,7 +106,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!session) return;
-    bufferRef.current = session.starter_code ?? "";
+    bufferRef.current = initialCode;
     const settings = session.settings.voice;
     const tts = ttsEnabled(settings)
       ? new SentenceTts({
@@ -125,9 +117,26 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       : null;
     tts?.setEnabled(!interviewerMutedRef.current);
     ttsRef.current = tts;
-    const socket = new SessionSocket(session.id, (message) => {
-      if (message.type === "error") {
-        setError(message.message);
+    const onMessage: ConstructorParameters<typeof SessionSocket>[2] = (message) => {
+      if ("seq" in message) lastSeqRef.current = Math.max(lastSeqRef.current, message.seq);
+      if (message.type === "replay") {
+        // the events missed while disconnected (the code buffer here is newer than any snapshot)
+        const { events } = message;
+        lastSeqRef.current = lastSeqOf(events, Math.max(lastSeqRef.current, message.last_seq ?? 0));
+        setTranscript((entries) => mergeUtterances(entries, events));
+        setClarifications((list) => [...list, ...clarificationsFrom(events)]);
+        setPhase((current) => phaseFrom(events, current));
+        const replayedMute = mutedFrom(events);
+        if (replayedMute !== undefined) setMuted(replayedMute);
+        const run = lastRunFrom(events);
+        if (run) setResult(run);
+        if (events.some((e) => e.type === "session_ended")) setEnded(true);
+      } else if (message.type === "error") {
+        if (message.code === "session_not_live") {
+          setEnded(true); // ended, or abandoned by a backend restart
+        } else {
+          setError(message.message);
+        }
         setRunning(false);
       } else if (message.type === "run_started") {
         setRunning(true);
@@ -180,12 +189,14 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         const { question, answer, by } = message;
         setClarifications((list) => [...list, { question, answer, by }]);
       }
-    });
+    };
+    const onConnection = (state: ConnectionState) => {
+      setConnection(state);
+      if (state === "reconnecting") setRunning(false); // its result comes with the replay
+    };
+    const socket = new SessionSocket(session.id, () => lastSeqRef.current, onMessage, onConnection);
     socketRef.current = socket;
-    const sync = new CodeSync(
-      (code) => socket.send({ type: "code_update", code }),
-      session.starter_code ?? "",
-    );
+    const sync = new CodeSync((code) => socket.send({ type: "code_update", code }), initialCode);
     syncRef.current = sync;
     const flushOnLeave = () => sync.flush();
     window.addEventListener("beforeunload", flushOnLeave);
@@ -200,7 +211,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       syncRef.current = null;
       socketRef.current = null;
     };
-  }, [session]);
+  }, [session, initialCode]);
 
   // Always listening while the Session is live and the mic is not muted. Every final utterance
   // goes on the record; the Interviewer decides whether to respond. Listening goes on while the
@@ -319,6 +330,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
           ))}
         </nav>
         {error && <span className="error">{error}</span>}
+        {connection === "reconnecting" && !ended && <span className="error">Reconnecting…</span>}
         {voiceError ? (
           <span className="hint" title={voiceError}>
             Mic off
@@ -380,7 +392,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       <section className="pane editor">
         <div className="editor-box">
           <CodeEditor
-            initialCode={session.starter_code ?? ""}
+            initialCode={initialCode}
             autocomplete={session.settings.autocomplete}
             onChange={(code) => {
               bufferRef.current = code;

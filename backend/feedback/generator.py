@@ -1,7 +1,7 @@
 """Runs Report generation in the background and answers `GET report`.
 
 One generator serves first generation (started when a Session ends), Retry after
-`report_failed`, regeneration and (later) Abandoned Sessions alike: each rebuilds the Report
+`report_failed`, regeneration and Abandoned Sessions alike: each rebuilds the Report
 from the stored event log only.
 """
 

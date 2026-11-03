@@ -69,6 +69,7 @@ def create_app(
             duration_min=config.default_duration_min,
             timeout_grace_s=config.timeout_grace_s,
             user_phase_lock_s=config.user_phase_lock_s,
+            abandon_after_idle_min=config.abandon_after_idle_min,
             models=config.models,
             triggers=config.triggers,
             voice=config.voice,
@@ -77,6 +78,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        manager.abandon_stale()  # Sessions a crash left hanging
         yield
         await manager.close()
         store.close()
@@ -131,7 +133,11 @@ def create_app(
         return {"status": "generating"}
 
     @app.websocket("/ws/sessions/{session_id}")
-    async def session_socket(websocket: WebSocket, session_id: str) -> None:
+    async def session_socket(
+        websocket: WebSocket, session_id: str, last_seq: int | None = None
+    ) -> None:
+        """`last_seq`: the last event `seq` the client has seen; it is sent the events after it
+        (a `replay` message) before anything else."""
         await websocket.accept()
         live = manager.live(session_id)
         if live is None:
@@ -144,8 +150,7 @@ def create_app(
         async def send(message: ServerMessage) -> None:
             await websocket.send_json(message)
 
-        unsubscribe = live.subscribe(send)
-        live.client_connected()
+        unsubscribe = await live.attach(send, last_seq=last_seq)
         try:
             while True:
                 raw = await websocket.receive_text()
