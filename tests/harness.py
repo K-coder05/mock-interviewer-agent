@@ -74,7 +74,7 @@ class FakeClock:
         self._now_ms += round(seconds * 1000)
 
 
-ScriptItem = str | ToolCall | Usage | Exception
+ScriptItem = str | ToolCall | Usage | Exception | asyncio.Event
 
 DEFAULT_USAGE_TOKENS = (1000, 200)
 """(input, output) tokens reported for a scripted turn that doesn't script its own Usage."""
@@ -84,7 +84,8 @@ class ScriptedModel:
     """Each call to `stream` consumes the next scripted turn.
 
     A turn is a sequence of strings (streamed as text deltas), ToolCalls (yielded in order),
-    Usage and exceptions (raised at that point, e.g. a ModelError mid-stream). Like the real
+    Usage, exceptions (raised at that point, e.g. a ModelError mid-stream) and asyncio.Events
+    (the stream waits there until the test sets it, holding the call in flight). Like the real
     client, a turn that completes reports its Usage before its tool calls: by default
     DEFAULT_USAGE_TOKENS on the requested model, unless the turn scripts a Usage itself.
     """
@@ -109,6 +110,9 @@ class ScriptedModel:
             await asyncio.sleep(0)  # like a real stream, let other tasks run between items
             if isinstance(item, Exception):
                 raise item
+            if isinstance(item, asyncio.Event):
+                await item.wait()
+                continue
             yield TextDelta(item) if isinstance(item, str) else item
 
 
@@ -200,13 +204,19 @@ class LiveSessionHarness:
     def advance(self, seconds: float) -> None:
         self.clock.advance(seconds)
 
-    async def elapse(self, session_id: str, seconds: float) -> None:
-        """Move the clock forward, let the Session's timer react, and wait for any Interviewer
-        reply (time-up prompt, closing) it caused."""
+    async def elapse(self, session_id: str, seconds: float, *, wait: bool = True) -> None:
+        """Move the clock forward, let the Session's timer and Triggers react, and (unless
+        `wait=False`) wait for any Interviewer reply (Nudge, time-up prompt, closing) it caused."""
         self.clock.advance(seconds)
         live = self.manager.live(session_id)
         assert live is not None
         await live.tick()
+        if wait:
+            await live.wait_for_interviewer()
+
+    async def wait_for_interviewer(self, session_id: str) -> None:
+        live = self.manager.live(session_id)
+        assert live is not None
         await live.wait_for_interviewer()
 
     async def finish_report(self, session_id: str) -> dict[str, Any] | None:

@@ -1,6 +1,6 @@
 """Live Session seam: the countdown timer, 5-minute warning, time-up grace and ending."""
 
-from tests.harness import LiveSessionHarness
+from tests.harness import LiveSessionHarness, ToolCall
 
 
 async def _connected(
@@ -45,6 +45,9 @@ async def test_timer_starts_at_the_greeting_not_at_session_creation(
 
 async def test_five_minute_warning_is_emitted_once(harness: LiveSessionHarness) -> None:
     session_id = await _connected(harness, duration_min=10)
+    # proactive Triggers on the way (silence, then the 5-minute checkpoint) stay silent
+    harness.model.script(ToolCall("stay_silent", {"reason": "thinking"}))
+    harness.model.script(ToolCall("stay_silent", {"reason": "thinking"}))
 
     await harness.elapse(session_id, 4 * 60 + 59)
     assert [m["state"] for m in harness.messages(session_id, "timer")] == ["running"]
@@ -57,6 +60,10 @@ async def test_five_minute_warning_is_emitted_once(harness: LiveSessionHarness) 
     assert timers[1]["remaining_ms"] == 5 * 60_000
     assert len(harness.events(session_id, "timer_warning")) == 1
     assert harness.session(session_id).status == "live"
+    assert [t.payload["reason"] for t in harness.events(session_id, "trigger")][-2:] == [
+        "silence",
+        "time",
+    ]
 
 
 async def test_time_up_prompts_for_a_last_thought_then_auto_ends_after_the_grace(

@@ -12,12 +12,13 @@ import dataclasses
 import difflib
 import logging
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from backend.agent.context import Style, build_system_prompt
-from backend.agent.interviewer import Decision, Interviewer, Trigger
+from backend.agent.interviewer import Decision, Interviewer
+from backend.agent.triggers import Trigger, TriggerConfig, TriggerEngine, coalesce
 from backend.agent.model import ModelClient, ModelError
 from backend.agent.prep import prepare_problem_brief
 from backend.clock import Clock
@@ -48,6 +49,7 @@ class SessionDefaults:
     timeout_grace_s: int
     models: ModelIds
     user_phase_lock_s: int = 120
+    triggers: TriggerConfig = dataclasses.field(default_factory=TriggerConfig)
 
 
 def _title_of(problem_md: str) -> str:
@@ -103,7 +105,10 @@ class LiveSession:
         self._run_task: asyncio.Task[None] | None = None
         self._greeted = False
         self._reply_task: asyncio.Task[None] | None = None
-        self._reply_trigger: Trigger | None = None
+        self._pending: list[Trigger] = []  # coalesce into the next decision call
+        self._triggers = TriggerEngine(
+            TriggerConfig.from_settings(record.settings.get("proactive"))
+        )
         self._listeners: list[Listener] = []
         self._duration_ms = int(record.settings["duration_min"]) * 60_000
         self._grace_ms = int(record.settings["timeout_grace_s"]) * 1000
@@ -149,7 +154,7 @@ class LiveSession:
         Candidate and restates the problem."""
         if not self._greeted:
             self._greeted = True
-            self._request_reply("session_start")
+            self._request_reply(Trigger("session_start"))
         elif self._timer_started_ms is not None or self._ending:
             # a reconnecting client needs the current timer state
             asyncio.create_task(self._emit_timer(self._timer_state()))
@@ -188,9 +193,12 @@ class LiveSession:
             self._time_up = True
             self._append("time_up", {})
             await self._emit_timer("time_up")
-            self._request_reply("time_up")
+            self._request_reply(Trigger("time_up"))
         if remaining <= -self._grace_ms:
             await self.end("timeout")
+            return
+        for trigger in self._triggers.due(self._now_ms()):
+            self._request_reply(trigger)
 
     async def end(self, reason: Literal["user", "timeout"]) -> None:
         """End the Session: the Interviewer closes politely (no verdict), then `session_ended`
@@ -204,7 +212,7 @@ class LiveSession:
             self._run_task.cancel()
             await asyncio.gather(self._run_task, return_exceptions=True)
         if self._greeted:  # nothing to close if the interview never began
-            self._request_reply("session_end")
+            self._request_reply(Trigger("session_end"))
             try:  # a hung model call must not keep the Session from ending
                 await asyncio.wait_for(self.wait_for_interviewer(), CLOSING_TIMEOUT_S)
             except TimeoutError:
@@ -285,7 +293,9 @@ class LiveSession:
 
     def _append(self, type: str, payload: dict[str, Any], *, t_ms: int | None = None) -> Event:
         t = self._now_ms() if t_ms is None else t_ms
-        return self._store.append_event(self.id, t_ms=t, type=type, payload=payload)
+        event = self._store.append_event(self.id, t_ms=t, type=type, payload=payload)
+        self._triggers.observe(event)  # the trigger engine consumes every event in order
+        return event
 
     async def _emit(self, message: ServerMessage) -> None:
         for listener in list(self._listeners):
@@ -344,20 +354,22 @@ class LiveSession:
             )
             return
         self._append_utterance("user", text.strip(), self._now_ms())
-        self._request_reply("typed_message")  # a typed message always gets a reply
+        self._request_reply(Trigger("typed_message"))  # a typed message always gets a reply
 
     def _request_reply(self, trigger: Trigger) -> None:
-        """Start a reply, or, if one is streaming, queue one more: it is built from the event
-        log when it starts, so it covers everything that arrived meanwhile."""
-        self._reply_trigger = trigger
+        """Start a decision call, or, if one is in flight, queue the Trigger: everything queued
+        meanwhile coalesces into the next call, which is built from the event log when it
+        starts, so it covers everything that arrived."""
+        self._pending.append(trigger)
         if self._reply_task is None or self._reply_task.done():
             self._reply_task = asyncio.create_task(self._reply_loop())
 
     async def _reply_loop(self) -> None:
-        while (trigger := self._reply_trigger) is not None:
-            self._reply_trigger = None
+        while self._pending:
+            lead, others = coalesce(self._pending)
+            self._pending = []
             try:
-                await self._reply(trigger)
+                await self._reply(lead, others)
             except asyncio.CancelledError:
                 raise
             except ModelError as exc:
@@ -367,13 +379,35 @@ class LiveSession:
                 logger.exception("Interviewer call failed for Session %s", self.id)
                 await self._emit_error("interviewer_failed", "The Interviewer failed to respond")
 
-    async def _reply(self, trigger: Trigger) -> None:
-        decision = await self._decide(trigger)
-        if decision is not None and not decision.text and trigger == "typed_message":
-            # A typed message always gets a spoken reply, even if the model only called a tool.
-            await self._decide("typed_message_unanswered")
+    async def _reply(self, lead: Trigger, others: list[Trigger]) -> None:
+        """One decision call for the coalesced Triggers, held back by the guardrails if it is
+        unprompted; a `trigger` event records the outcome."""
+        logged: dict[str, Any] = {
+            **lead.to_payload(),
+            "proactive": lead.proactive,
+            **({"coalesced": [t.to_payload() for t in others]} if others else {}),
+        }
+        if lead.proactive and (held := self._triggers.suppression(self._now_ms())) is not None:
+            self._append("trigger", {**logged, "outcome": "suppressed", "suppressed_by": held})
+            return
+        try:
+            decision = await self._decide(lead, others)
+            if not decision.text and lead.reason == "typed_message":
+                # A typed message always gets a spoken reply, even if the model only called a tool.
+                decision = await self._decide(Trigger("typed_message_unanswered"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ModelError) else "interviewer_failed"
+            self._append("trigger", {**logged, "outcome": "silent", "error": code})
+            raise
+        if decision.text:
+            self._append("trigger", {**logged, "outcome": "spoke"})
+        else:
+            reason = {"silent_reason": decision.silent_reason} if decision.silent_reason else {}
+            self._append("trigger", {**logged, "outcome": "silent", **reason})
 
-    async def _decide(self, trigger: Trigger) -> Decision | None:
+    async def _decide(self, trigger: Trigger, coalesced: Sequence[Trigger] = ()) -> Decision:
         """One decision call, streamed to clients and applied to the event log. A reply that
         fails part-way is cancelled (`interviewer_cancel`) and the error re-raised."""
         msg_id = new_id("msg")
@@ -382,7 +416,7 @@ class LiveSession:
         async def on_text(text: str) -> None:
             nonlocal streamed
             streamed = True
-            if trigger == "session_start":
+            if trigger.reason == "session_start":
                 await self._start_timer()
             await self._emit({"type": "interviewer_delta", "msg_id": msg_id, "text": text})
 
@@ -394,14 +428,17 @@ class LiveSession:
                 remaining_ms=None if self._timer_started_ms is None else self._remaining_ms(),
                 phase_lock_ms=self._phase_lock_ms,
                 trigger=trigger,
+                coalesced=coalesced,
                 on_text=on_text,
             )
         except BaseException:
-            if trigger == "session_start" and not isinstance(sys.exc_info()[1], asyncio.CancelledError):
+            if trigger.reason == "session_start" and not isinstance(sys.exc_info()[1], asyncio.CancelledError):
                 await self._start_timer()  # a failed greeting must not leave the interview untimed
             if streamed:
                 await self._emit({"type": "interviewer_cancel", "msg_id": msg_id})
             raise
+        if trigger.reason == "session_start":
+            await self._start_timer()  # even a greeting with no speech starts the interview
         if decision.text:
             self._append_utterance("interviewer", decision.text, start, msg_id=msg_id)
             await self._emit(
@@ -533,6 +570,7 @@ class SessionManager:
             "timeout_grace_s": self._defaults.timeout_grace_s,
             "autocomplete": autocomplete,
             "user_phase_lock_s": self._defaults.user_phase_lock_s,
+            "proactive": self._defaults.triggers.to_settings(),
             "style": style.to_settings(),
             "models": dataclasses.asdict(self._defaults.models),
         }

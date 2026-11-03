@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.agent.triggers import Trigger
 from backend.db import Event
 from backend.phases import OVERRUN_MIN, current
 
@@ -100,7 +101,8 @@ def build_turn_message(
     events: Sequence[Event],
     *,
     now_ms: int,
-    trigger: str,
+    trigger: Trigger,
+    coalesced: Sequence[Trigger] = (),
     remaining_ms: int | None = None,
     phase_lock_ms: int = 0,
 ) -> str:
@@ -153,6 +155,11 @@ def build_turn_message(
             "<transcript>\n" + ("\n".join(transcript) or "(nothing said yet)") + "\n</transcript>",
             "<current_code>\n" + (numbered or "(empty)") + "\n</current_code>",
             "<recent_runs>\n" + ("\n\n".join(run_lines) or "(no runs yet)") + "\n</recent_runs>",
-            f"<trigger>{trigger}</trigger>",
+            "<trigger>"
+            + "\n".join(
+                [trigger.describe()]
+                + [f"Also since your last turn: {t.describe()}" for t in coalesced]
+            )
+            + "</trigger>",
         ]
     )

@@ -70,6 +70,7 @@ def create_app(
             timeout_grace_s=config.timeout_grace_s,
             user_phase_lock_s=config.user_phase_lock_s,
             models=config.models,
+            triggers=config.triggers,
         ),
     )
 

@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
+from backend.agent.triggers import TriggerConfig
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -41,6 +43,7 @@ class Config:
     user_phase_lock_s: int
     db_path: Path
     runner: RunnerConfig
+    triggers: TriggerConfig
     raw: dict[str, Any]
     """The full parsed config.yaml, for sections later modules read (runner, voice, ...)."""
 
@@ -63,6 +66,7 @@ def load_config(
     models = raw.get("models", {})
     db_path = Path(raw.get("storage", {}).get("db_path", "data/interviews.db"))
     runner_raw = raw.get("runner", {})
+    interview = raw.get("interview", {})
     return Config(
         api_key=api_key,
         models=ModelIds(
@@ -78,5 +82,6 @@ def load_config(
             memory_mb=int(runner_raw.get("memory_mb", 512)),
             output_cap_kb=int(runner_raw.get("output_cap_kb", 64)),
         ),
+        triggers=TriggerConfig.from_settings(interview),
         raw=raw,
     )

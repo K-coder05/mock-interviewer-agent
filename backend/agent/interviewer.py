@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from backend.agent.context import build_turn_message
 from backend.agent.model import ModelClient, ModelRequest, TextDelta, ToolCall
+from backend.agent.triggers import Trigger
 from backend.db import Event
 from backend.phases import PHASES
 
@@ -22,10 +23,6 @@ logger = logging.getLogger(__name__)
 DECISION_MAX_TOKENS = 1024
 
 ClarifiedBy = Literal["interviewer", "candidate"]
-# Why the Interviewer is asked to respond. Later tickets add silence, run, stuck, time...
-Trigger = Literal[
-    "session_start", "typed_message", "typed_message_unanswered", "time_up", "session_end"
-]
 
 RECORD_CLARIFICATION: dict[str, Any] = {
     "name": "record_clarification",
@@ -64,7 +61,25 @@ SET_PHASE: dict[str, Any] = {
     },
 }
 
-TOOLS = [RECORD_CLARIFICATION, SET_PHASE]
+STAY_SILENT: dict[str, Any] = {
+    "name": "stay_silent",
+    "description": (
+        "Say nothing this turn. Call it, with no text, when speaking up now would interrupt "
+        "productive work or add nothing. The reason is logged privately to tune your behavior."
+    ),
+    "eager_input_streaming": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "description": "Why staying silent is right, briefly."}
+        },
+        "required": ["reason"],
+        "additionalProperties": False,
+    },
+}
+
+# Deterministic order: the tool list is part of the prompt-cached prefix.
+TOOLS = [RECORD_CLARIFICATION, SET_PHASE, STAY_SILENT]
 
 
 @dataclass(frozen=True)
@@ -80,6 +95,8 @@ class Decision:
     clarifications: list[Clarification] = field(default_factory=list)
     phase: str | None = None
     """The last valid `set_phase` the model asked for."""
+    silent_reason: str | None = None
+    """The `stay_silent` reason, when the model chose silence."""
 
 
 def _clarification(value: dict[str, Any]) -> Clarification | None:
@@ -107,6 +124,7 @@ class Interviewer:
         remaining_ms: int | None = None,
         phase_lock_ms: int = 0,
         trigger: Trigger,
+        coalesced: Sequence[Trigger] = (),
         on_text: Callable[[str], Awaitable[None]],
     ) -> Decision:
         """Make one decision call. Text is passed to `on_text` as it streams; tool calls are
@@ -121,6 +139,7 @@ class Interviewer:
                         remaining_ms=remaining_ms,
                         phase_lock_ms=phase_lock_ms,
                         trigger=trigger,
+                        coalesced=coalesced,
                     )}
             ],
             tools=TOOLS,
@@ -130,6 +149,7 @@ class Interviewer:
         text: list[str] = []
         clarifications: list[Clarification] = []
         phase: str | None = None
+        silent_reason: str | None = None
         async for event in self._model.stream(request):
             if isinstance(event, TextDelta):
                 if event.text:
@@ -147,6 +167,16 @@ class Interviewer:
                     phase = str(event.input["phase"])
                 else:
                     logger.warning("ignoring invalid set_phase input: %r", event.input)
+            elif event.name == STAY_SILENT["name"]:
+                reason = event.input.get("reason")
+                given = reason.strip() if isinstance(reason, str) else ""
+                silent_reason = given or "(none given)"
             else:
                 logger.warning("ignoring unknown tool call %r", event.name)
-        return Decision(text="".join(text).strip(), clarifications=clarifications, phase=phase)
+        spoken = "".join(text).strip()
+        if spoken and silent_reason is not None:
+            logger.warning("stay_silent called alongside speech; the speech stands")
+            silent_reason = None
+        return Decision(
+            text=spoken, clarifications=clarifications, phase=phase, silent_reason=silent_reason
+        )

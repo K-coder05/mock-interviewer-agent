@@ -338,6 +338,10 @@ def _key_snapshot_seqs(events: Sequence[Event], correctness: Event | None) -> se
     return seqs
 
 
+# Operator data about the Interviewer's own decisions (for tuning), not Candidate evidence.
+NOT_IN_TIMELINE = frozenset({"trigger"})
+
+
 def _timeline_entry(event: Event, full_snapshots: set[int]) -> str:
     p, stamp = event.payload, _stamp(event.t_ms)
     if event.type == "session_started":
@@ -387,7 +391,7 @@ def build_report_message(
     """The single user message for the Report call, derived only from the stored Session."""
     correctness = correctness_snapshot(events)
     full = _key_snapshot_seqs(events, correctness)
-    timeline = [_timeline_entry(e, full) for e in events]
+    timeline = [_timeline_entry(e, full) for e in events if e.type not in NOT_IN_TIMELINE]
     clarifications = [
         f"- Q: {e.payload.get('question')} A: {e.payload.get('answer')} (by {e.payload.get('by')})"
         for e in events
