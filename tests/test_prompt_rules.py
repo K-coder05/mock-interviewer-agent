@@ -17,6 +17,7 @@ from tests.prompt_rules import (
         "Like so:\n    for i, n in enumerate(nums):\n        pass",
         "You could write\nfor n in nums:\nand go from there.",
         "return seen[target - n]",
+        "for i, n in enumerate(nums):",
         "Set `seen = {}` first.",
         "Call `seen.get(x)` there.",
         "def two_sum(nums, target):",
@@ -35,6 +36,9 @@ def test_code_is_detected(text: str) -> None:
         "That is O(n) in time, what about `O(n)` in space?",
         "Walk me through what happens for an empty list.",
         "I would return to your complexity question in a moment.",
+        "Nice.\nreturn to the brief for a second",
+        "for example in your loop, what is i?",
+        "1. Think about lookups\n    - what structure gives O(1)?",
     ],
 )
 def test_prose_is_not_code(text: str) -> None:
@@ -49,6 +53,9 @@ def test_prose_is_not_code(text: str) -> None:
         "Try target = 6.",
         "Run two_sum(3, 4) and see.",
         "Try (1, 2, 3).",
+        "Try [5].",
+        "Try [] and see.",
+        "What if x == 2?",
         "Call it with ('abc', 2).",
         "What happens with [-1, 0, 1]?",
         "Try a string like 'aab'.",
@@ -65,6 +72,8 @@ def test_concrete_inputs_are_detected(text: str) -> None:
         "Think about an empty list, negatives and duplicates.",
         "You have 5 minutes left, so start wrapping up.",
         "I'd consider your second approach, with 2 passes.",
+        "can you get the lookup down to O(1)?",
+        "You said, 'hash map', right?",
         "",
     ],
 )

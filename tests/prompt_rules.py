@@ -16,19 +16,23 @@ MAX_HINT_LEVEL = 4
 _FENCE = re.compile(r"```|~~~")
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 _PYTHON_STATEMENT = re.compile(
-    r"^\s*(?:def |class |for \w+ in |while .+:|if .+:|elif .+:|else:|return\b|import |from \w+ import |"
-    r"\w+(?:\[[^\]]*\])?\s*[-+*/]?=\s*\S)",
+    r"^\s*(?:def \w+\(|class \w+[:(]|for \w+(?:, *\w+)* in .+:\s*$|while .+:\s*$|if .+:\s*$|"
+    r"elif .+:\s*$|else:|return (?:\w+\s*$|.*[\[(+\-*/=].*)|import \w+\s*$|from \w+ import \w+|"
+    r"\w+(?:\[[^\]]*\])?\s*[-+*/]?=\s*[\w\[({\"'-])",
     re.MULTILINE,
 )
-_INDENTED_LINE = re.compile(r"^(?: {4}|\t)\S", re.MULTILINE)
+_INDENTED_LINE = re.compile(r"^(?: {4}|\t)(?![-*\d])\S.*[=(:\[]", re.MULTILINE)
 # What makes an inline span code rather than a term such as `nums` or `O(n)`.
 _CODE_SPAN = re.compile(r"[=\[\]{}]|\w\(.*\)|\bin\b|\breturn\b")
 
 _NUMBER = r"-?\d+(?:\.\d+)?"
-_NUMBER_COLLECTION = re.compile(rf"[\[({{]\s*{_NUMBER}(?:\s*,\s*{_NUMBER})+\s*[\])}}]")
-_STRING_LITERAL_ARG = re.compile(r"""[(\[,]\s*["'][^"']*["']\s*[,)\]]""")
-_ASSIGNED_VALUE = re.compile(rf"""\b\w+\s*=\s*(?:{_NUMBER}|\[|["'])""")
-_CALL_WITH_NUMBERS = re.compile(rf"\b\w+\(\s*{_NUMBER}(?:\s*,\s*{_NUMBER})*\s*\)")
+_NUMBER_COLLECTION = re.compile(
+    rf"\[\s*{_NUMBER}(?:\s*,\s*{_NUMBER})*\s*\]|[({{]\s*{_NUMBER}(?:\s*,\s*{_NUMBER})+\s*[)}}]"
+)
+_EMPTY_LITERAL = re.compile(r"\[\s*\]|\{\s*\}|\(\s*\)")
+_STRING_LITERAL_ARG = re.compile(r"""\w\(\s*["'][^"']*["']\s*[,)]|[\[(]\s*["'][^"']*["']\s*[,\]]""")
+_ASSIGNED_VALUE = re.compile(rf"""\b\w+\s*={{1,2}}\s*(?:{_NUMBER}|\[|["'])""")
+_CALL_WITH_NUMBERS = re.compile(rf"\b(?!O\b|Theta\b)\w+\(\s*{_NUMBER}(?:\s*,\s*{_NUMBER})*\s*\)")
 _STRING_INPUT = re.compile(r"""\b(?:input|string|s)\s+(?:like|such as|of|=)\s+["'][^"']+["']""", re.I)
 
 
@@ -51,6 +55,7 @@ def has_concrete_test_input(text: str) -> bool:
         pattern.search(text)
         for pattern in (
             _NUMBER_COLLECTION,
+            _EMPTY_LITERAL,
             _ASSIGNED_VALUE,
             _CALL_WITH_NUMBERS,
             _STRING_LITERAL_ARG,

@@ -85,12 +85,16 @@ async def _session(harness: LiveSessionHarness) -> str:
     return session_id
 
 
-def _check(harness: LiveSessionHarness, session_id: str) -> None:
-    spoken = [
+def _spoken(harness: LiveSessionHarness, session_id: str) -> list[str]:
+    return [
         str(e.payload["text"])
         for e in harness.events(session_id, "utterance")
         if e.payload.get("speaker") == "interviewer"
     ]
+
+
+def _check(harness: LiveSessionHarness, session_id: str) -> None:
+    spoken = _spoken(harness, session_id)
     hints = harness.events(session_id, "hint_given")
     levels = [int(e.payload["level"]) for e in hints]
     texts = spoken + [str(e.payload["text"]) for e in hints]
@@ -103,7 +107,10 @@ def _check(harness: LiveSessionHarness, session_id: str) -> None:
 async def _press(harness: LiveSessionHarness, messages: list[str]) -> None:
     session_id = await _session(harness)
     for message in messages:
+        before = len(_spoken(harness, session_id))
         await harness.say(session_id, message)
+        assert not harness.messages(session_id, "error"), "a model call failed"
+        assert len(_spoken(harness, session_id)) > before, f"no reply to {message!r}"
     _check(harness, session_id)
 
 
