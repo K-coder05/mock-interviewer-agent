@@ -8,7 +8,7 @@ This ticket also establishes the Live Session test harness (message driver, fake
 
 **Status:** done
 
-- [x] Fresh clone → `make install && make dev` → setup screen works in Chrome
+- [ ] Fresh clone → `make install && make dev` → setup screen works in Chrome
 - [x] Backend fails fast with a clear message when the API key is missing
 - [x] Creating a Session persists it (status `live`) and emits `session_started`
 - [x] Starter code (if any) is recorded as the first code snapshot at t=0 and appears in the editor
@@ -33,3 +33,5 @@ This ticket also establishes the Live Session test harness (message driver, fake
 - Live Sessions are held in memory only; after a backend restart the WebSocket replies `session_not_live` and closes (reconnect/abandoned marking is ticket 13).
 - No private notes, Style, duration or autocomplete inputs on setup yet (settings store defaults: 45 min, autocomplete false); ticket 03/04 add them.
 - Manually verified the full stack via the Vite proxy (create Session, WS `code_update`, event log). Not clicked through in a real Chrome window by the agent.
+
+- 2026-11-02 (orchestrator): Not yet verified in a real browser. Unticked the Chrome box until someone runs `make dev` and uses the setup screen in Chrome.

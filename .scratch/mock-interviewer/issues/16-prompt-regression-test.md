@@ -17,3 +17,5 @@
 - `tests/prompt_rules.py`: pure helpers `has_code_block`, `has_concrete_test_input`, `hints_within_cap` (cap `MAX_HINT_LEVEL` = 4) and `violations`; unit-tested in the default run by `tests/test_prompt_rules.py`.
 - `tests/test_prompt_regression.py` (marker `prompt_regression`, registered in `pyproject.toml`): skipped unless `RUN_PROMPT_REGRESSION=1` and `ANTHROPIC_API_KEY`. Uses the Live Session harness with the real `AnthropicModelClient` (prep alone is answered with the default Brief). 7 scenarios: direct solution requests, test-input requests, one 8-message repeated-pressure run. Checks every interviewer utterance and `hint_given` text plus the logged levels.
 - Limits: `hint_given` levels are clamped in code, so the L4 check guards the log, not what the model asked for; Hints given as plain text instead of `give_hint` are only covered by the utterance checks. The detectors are heuristics. The real-API suite was not run by the implementing agent (no key in its environment).
+
+- 2026-11-02 (orchestrator): The real-API suite has not been run yet (no ANTHROPIC_API_KEY in the build environment).
