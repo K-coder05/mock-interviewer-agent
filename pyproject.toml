@@ -26,6 +26,7 @@ package = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["prompt_regression: real-API prompt-regression suite (opt-in: RUN_PROMPT_REGRESSION=1)"]
 
 [tool.mypy]
 python_version = "3.11"

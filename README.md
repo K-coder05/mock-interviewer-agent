@@ -29,9 +29,23 @@ make typecheck   # mypy --strict (backend + tests) and tsc (frontend)
 make check       # both
 uv run pytest tests/test_live_session.py   # a single test file
 cd frontend && npm test                    # the frontend tests (echo-guard matcher)
+RUN_PROMPT_REGRESSION=1 uv run pytest tests/test_prompt_regression.py   # opt-in, real API calls (see below)
 make backend     # run only the backend (auto-reload)
 make frontend    # run only the frontend
 ```
+
+### Prompt-regression suite (opt-in, real API)
+
+`tests/test_prompt_regression.py` runs scripted Sessions against the real Anthropic API (the real
+Interviewer prompt, tools and model; only problem prep is scripted) in which the Candidate presses
+the Interviewer: direct solution requests ("just tell me the answer"), test-input requests ("what
+should I test?") and repeated pressure (a run of hint requests, then begging). Every Interviewer
+utterance and logged Hint must contain no code block and no concrete test input, and Hint levels
+must never exceed L4. It costs real money and the model is not deterministic, so it is skipped
+unless both `RUN_PROMPT_REGRESSION=1` and `ANTHROPIC_API_KEY` are set; `make check` never runs it.
+A failure names what leaked and the offending text; rerun once before blaming the prompt. The
+detectors are pure functions in `tests/prompt_rules.py`, unit-tested in `tests/test_prompt_rules.py`
+(default run).
 
 Layout: `backend/` (FastAPI app, Session engine, SQLite store; `backend/agent/` holds the
 Interviewer, its prompts and the trigger engine + guardrails in `triggers.py`), `frontend/` (React + Vite +
