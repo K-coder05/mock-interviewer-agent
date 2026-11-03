@@ -111,7 +111,8 @@ export interface Report {
     rationale: string;
   };
   rubric: RubricRow[];
-  testing: TestingBreakdown;
+  /** Absent on Reports generated before ticket 06. */
+  testing?: TestingBreakdown;
   correctness: { executed: false; note: string; snapshot_seq: number | null; t_ms: number | null };
 }
 

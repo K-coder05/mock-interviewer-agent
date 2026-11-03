@@ -25,9 +25,10 @@ from typing import Literal
 from backend.db import Event
 
 SPOKEN_WINDOW_MS = 30_000
+SPOKEN_GRACE_MS = 5_000  # speech right after the Run starts still counts
 EXPECTATION = re.compile(
-    r"expect|should|->|→|=>|==|\bgives?\b|\breturns?\b|\bequals?\b|\boutputs?\b|\banswer\b|\bresult\b"
-    r"|\bgets?\b|\bis\s+-?\d",
+    r"expect|should (?:be|return|give|print|output|get|equal)|->|→|=>|==|\bgives?\b|\breturns?\b"
+    r"|\bequals?\b|\boutputs? (?:is|should)|\bis\s+-?\d",
     re.IGNORECASE,
 )
 
@@ -60,7 +61,8 @@ def _is_main_guard(node: ast.stmt) -> bool:
 
 
 def _statements(body: Sequence[ast.stmt], in_guard: bool) -> list[tuple[ast.stmt, bool]]:
-    """Top-level statements (and those inside the main guard) with whether they sit in it."""
+    """Top-level statements (and those inside the main guard) with whether they sit in it.
+    The body of a `main` or `test*` function the top level calls counts as the guard's."""
     found: list[tuple[ast.stmt, bool]] = []
     for node in body:
         if _is_main_guard(node):
@@ -68,6 +70,19 @@ def _statements(body: Sequence[ast.stmt], in_guard: bool) -> list[tuple[ast.stmt
             found.extend(_statements(node.body, True))
         else:
             found.append((node, in_guard))
+    called = {
+        n.func.id
+        for stmt, _ in found
+        for n in ast.walk(stmt)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    for node in body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and (node.name == "main" or node.name.startswith("test"))
+            and node.name in called
+        ):
+            found.extend((stmt, True) for stmt in node.body)
     return found
 
 
@@ -113,15 +128,18 @@ def _failing_line(run: Event) -> int | None:
     """The `main.py` line the Run's traceback ended on, if it stopped on an error."""
     if run.payload.get("exit_code") == 0 or run.payload.get("timed_out"):
         return None
-    lines = re.findall(r'File "[^"]*main\.py", line (\d+)', str(run.payload.get("stderr", "")))
-    return int(lines[-1]) if lines else None
+    frames = re.findall(
+        r'File "[^"]*main\.py", line (\d+), in (\S+)', str(run.payload.get("stderr", ""))
+    )
+    module = [int(n) for n, scope in frames if scope == "<module>"]
+    return module[0] if module else None
 
 
 def _said_expectation(events: Sequence[Event], t_ms: int) -> bool:
     return any(
         e.type == "utterance"
         and e.payload.get("speaker") == "user"
-        and abs(e.t_ms - t_ms) <= SPOKEN_WINDOW_MS
+        and -SPOKEN_WINDOW_MS <= e.t_ms - t_ms <= SPOKEN_GRACE_MS
         and EXPECTATION.search(str(e.payload.get("text", "")))
         for e in events
     )
@@ -133,7 +151,8 @@ def extract_executed_tests(events: Sequence[Event]) -> list[ExecutedTest]:
     snapshots = {e.seq: e for e in events if e.type == "code_snapshot"}
     tests: dict[tuple[str, str], ExecutedTest] = {}
     for run in (e for e in events if e.type == "run"):
-        snapshot = snapshots.get(int(run.payload.get("snapshot_seq", -1)))
+        seq = run.payload.get("snapshot_seq")
+        snapshot = snapshots.get(seq) if isinstance(seq, int) else None
         found = _tests_in_run(events, run, str(snapshot.payload.get("code", "")) if snapshot else "")
         for form, source, verified, outcome in found:
             key = (form, source)
@@ -189,6 +208,6 @@ def _tests_in_run(
             verified = form == "assert" or spoken or any(EXPECTATION.search(c) for c in nearby)
             source = "\n".join(lines[node.lineno - 1 : end]).strip()
             found.append((form, source, verified, outcome))
-    if stdin.strip():
+    if stdin.strip() and ("input" in code or "stdin" in code):
         found.append(("stdin", stdin.strip(), spoken, "ok" if run.payload.get("exit_code") == 0 else "unknown"))
     return found

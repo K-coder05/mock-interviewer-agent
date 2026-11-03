@@ -181,7 +181,8 @@ def test_categories(record: SessionRecord) -> list[str]:
     """The categories a test can be filed under: the brief's Edge-Case Categories, then two
     catch-alls."""
     brief = record.problem_brief or {}
-    return [c["name"] for c in brief.get("edge_case_categories", [])] + [TYPICAL, OTHER]
+    names = [c["name"] for c in brief.get("edge_case_categories", [])]
+    return list(dict.fromkeys([*names, TYPICAL, OTHER]))
 
 
 def validate_submission(
@@ -206,6 +207,11 @@ def validate_submission(
         for e in score.evidence
         if e.t_ms not in log_t_ms
     ]
+    filed = [t.id for t in submission.executed_test_categories]
+    if missing := sorted(set(test_ids) - set(filed)):
+        problems.append(f"executed_test_categories: no category for {', '.join(missing)}")
+    if len(set(filed)) != len(filed):
+        problems.append("executed_test_categories: each test id must appear once")
     allowed = ", ".join(f'"{c}"' for c in categories)
     for tagged in submission.executed_test_categories:
         if tagged.id not in test_ids:

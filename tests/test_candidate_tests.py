@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from backend.agent.model import ToolCall
+from backend.feedback.tests import extract_executed_tests
 from tests.report_harness import EventLog, ReportHarness, submit_report, traced
 
 CODE = '''def two_sum(nums, target):
@@ -22,8 +24,11 @@ if __name__ == "__main__":
 '''
 
 
-async def _testing(reports: ReportHarness, log: EventLog, script: Any) -> dict[str, Any]:
+async def _testing(reports: ReportHarness, log: EventLog, script: ToolCall) -> dict[str, Any]:
     log.end(900)
+    if not script.input["executed_test_categories"]:  # file every extracted test under "Other"
+        found = extract_executed_tests(reports.store.events(log.id))
+        script.input["executed_test_categories"] = [{"id": t.id, "category": "Other"} for t in found]
     reports.model.script(script)
     view = await reports.generate(log.id)
     assert view["status"] == "report_ready"
@@ -42,6 +47,7 @@ async def test_each_executed_form_is_extracted_and_asserts_are_verified(
     log = reports.session()
     log.code(100, CODE)
     log.run(120, stdout="[0, 1]\nNone\n", stdin="")
+    log.code(150, "n = int(input())\n")
     log.run(200, stdout="", stdin="3\n1 2 3\n")
 
     testing = await _testing(reports, log, submit_report())
@@ -238,3 +244,45 @@ async def test_a_session_with_no_runs_has_an_empty_breakdown_listing_every_categ
 
     assert testing["groups"] == [] and testing["ran_but_not_verified"] == []
     assert [c["name"] for c in testing["missed_categories"]] == ["Duplicates", "Negatives"]
+
+
+async def test_a_failure_inside_a_function_stops_at_the_module_level_call(
+    reports: ReportHarness,
+) -> None:
+    log = reports.session()
+    log.code(100, "def f(x):\n    return 1 / x\n\nassert f(1) == 1\nassert f(0) == 0\nassert f(2) == 0.5\n")
+    log.run(
+        120,
+        exit_code=1,
+        stderr='Traceback (most recent call last):\n  File "/t/main.py", line 5, in <module>\n'
+        '  File "/t/main.py", line 2, in f\nZeroDivisionError\n',
+        )
+
+    tests = _tests(await _testing(reports, log, submit_report(executed={"x1": "Typical case", "x2": "Typical case"})))
+
+    assert {t["input"]: t["outcome"] for t in tests.values()} == {
+        "assert f(1) == 1": "ok",
+        "assert f(0) == 0": "failed",
+    }
+
+
+async def test_asserts_inside_a_called_main_function_are_found(reports: ReportHarness) -> None:
+    log = reports.session()
+    log.code(100, "def main():\n    assert abs(-1) == 1\n\nif __name__ == '__main__':\n    main()\n")
+    log.run(120)
+
+    tests = _tests(await _testing(reports, log, submit_report(executed={"x1": "Negatives", "x2": "Other"})))
+
+    assert tests["assert abs(-1) == 1"]["verified"] is True
+
+
+async def test_every_extracted_test_must_be_filed_under_a_category(reports: ReportHarness) -> None:
+    log = reports.session()
+    log.code(100, "assert abs(-1) == 1\n")
+    log.run(120)
+    log.end(900)
+    reports.model.script(submit_report())  # files nothing
+
+    view = await reports.generate(log.id)
+
+    assert view == {"status": "report_failed"}
