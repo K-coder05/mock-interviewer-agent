@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from backend.agent.model import ModelEvent, ModelRequest, TextDelta, ToolCall
-from backend.config import ModelIds
+from backend.config import ModelIds, RunnerConfig
 from backend.db import Event, SessionRecord, Store
+from backend.runner import Runner
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
 DEFAULT_MODELS = ModelIds(
@@ -63,13 +64,14 @@ class ScriptedModel:
 
 
 class LiveSessionHarness:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, runner: Runner | None = None) -> None:
         self.clock = FakeClock()
         self.model = ScriptedModel()  # injected into the Session engine once the Interviewer exists
         self.store = Store(db_path)
         self.manager = SessionManager(
             store=self.store,
             clock=self.clock,
+            runner=runner or Runner(RunnerConfig(timeout_s=5)),
             defaults=SessionDefaults(duration_min=45, models=DEFAULT_MODELS),
         )
         self.sent: dict[str, list[ServerMessage]] = {}
@@ -94,6 +96,12 @@ class LiveSessionHarness:
         live = self.manager.live(session_id)
         assert live is not None, f"no live Session {session_id}"
         await live.handle({"type": type, **payload})
+
+    async def finish_run(self, session_id: str) -> None:
+        """Wait for the Session's in-flight Run to complete (Runs execute in the background)."""
+        live = self.manager.live(session_id)
+        assert live is not None
+        await live.wait_for_run()
 
     def advance(self, seconds: float) -> None:
         self.clock.advance(seconds)

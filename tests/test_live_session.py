@@ -81,3 +81,76 @@ async def test_unknown_messages_get_an_error_and_no_event(harness: LiveSessionHa
 
     assert [m["code"] for m in harness.messages(session_id, "error")] == ["unknown_message"]
     assert [e.type for e in harness.events(session_id)] == ["session_started"]
+
+
+async def test_run_forces_a_snapshot_and_the_run_event_references_its_seq(
+    harness: LiveSessionHarness,
+) -> None:
+    session_id = harness.start(starter_code="print('old')\n")
+
+    harness.advance(3)
+    await harness.send(session_id, "run", code="print('new')\n", stdin="")
+    await harness.finish_run(session_id)
+
+    events = harness.events(session_id)
+    assert [e.type for e in events] == ["session_started", "code_snapshot", "code_snapshot", "run"]
+    snapshot, run = events[2], events[3]
+    assert snapshot.payload["code"] == "print('new')\n"
+    assert run.payload["snapshot_seq"] == snapshot.seq
+    assert run.payload["stdout"] == "new\n"
+    assert run.payload["exit_code"] == 0
+    assert run.payload["stdin"] == ""
+    assert run.payload["timed_out"] is False
+    [result] = harness.messages(session_id, "run_result")
+    assert result["stdout"] == "new\n" and result["snapshot_seq"] == snapshot.seq
+
+
+async def test_run_of_an_unchanged_buffer_reuses_the_latest_snapshot(
+    harness: LiveSessionHarness,
+) -> None:
+    session_id = harness.start(starter_code="print(1)\n")
+
+    await harness.send(session_id, "run", code="print(1)\n")
+    await harness.finish_run(session_id)
+
+    assert len(harness.events(session_id, "code_snapshot")) == 1
+    [run] = harness.events(session_id, "run")
+    assert run.payload["snapshot_seq"] == 2
+
+
+async def test_run_passes_stdin_through(harness: LiveSessionHarness) -> None:
+    session_id = harness.start()
+
+    await harness.send(session_id, "run", code="print(input().upper())\n", stdin="abc\n")
+    await harness.finish_run(session_id)
+
+    [run] = harness.events(session_id, "run")
+    assert run.payload["stdout"] == "ABC\n"
+    assert run.payload["stdin"] == "abc\n"
+
+
+async def test_a_second_run_cancels_the_first_and_only_the_second_is_recorded(
+    harness: LiveSessionHarness,
+) -> None:
+    session_id = harness.start()
+
+    await harness.send(session_id, "run", code="import time\ntime.sleep(60)\n")
+    await harness.send(session_id, "run", code="print('second')\n")
+    await harness.finish_run(session_id)
+
+    [run] = harness.events(session_id, "run")
+    assert run.payload["stdout"] == "second\n"
+    assert [m["type"] for m in harness.messages(session_id) if m["type"].startswith("run")] == [
+        "run_started",
+        "run_started",
+        "run_result",
+    ]
+
+
+async def test_run_requires_a_string_buffer(harness: LiveSessionHarness) -> None:
+    session_id = harness.start()
+
+    await harness.send(session_id, "run", code=5)
+
+    assert harness.messages(session_id, "error")[0]["code"] == "invalid_message"
+    assert harness.events(session_id, "run") == []

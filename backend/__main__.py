@@ -7,6 +7,7 @@ import argparse
 import sys
 
 from backend.config import ConfigError, load_config
+from backend.runner import check_interpreter
 
 
 def main() -> int:
@@ -18,12 +19,13 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        load_config()
+        config = load_config()
+        interpreter = check_interpreter(config.runner)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.check:
-        print("config OK")
+        print(f"config OK (Runner interpreter: {interpreter})")
         return 0
 
     import uvicorn

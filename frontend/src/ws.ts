@@ -1,8 +1,24 @@
 // Typed WebSocket client for one live Session. Reconnect/replay arrives with a later ticket.
 
-export type ClientMessage = { type: "code_update"; code: string };
+export type ClientMessage =
+  | { type: "code_update"; code: string }
+  | { type: "run"; code: string; stdin: string };
 
-export type ServerMessage = { type: "error"; code: string; message: string };
+export interface RunResult {
+  snapshot_seq: number;
+  stdin: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+  timed_out: boolean;
+  truncated: boolean;
+}
+
+export type ServerMessage =
+  | { type: "error"; code: string; message: string }
+  | { type: "run_started"; snapshot_seq: number }
+  | ({ type: "run_result" } & RunResult);
 
 export class SessionSocket {
   private socket: WebSocket;

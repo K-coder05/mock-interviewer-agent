@@ -1,4 +1,6 @@
+import { useRef } from "react";
 import Editor, { loader } from "@monaco-editor/react";
+import type { OnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 
@@ -10,11 +12,21 @@ interface Props {
   initialCode: string;
   autocomplete: boolean;
   onChange: (code: string) => void;
+  /** Called with the live buffer on Cmd/Ctrl+Enter. */
+  onRun: (code: string) => void;
 }
 
-export function CodeEditor({ initialCode, autocomplete, onChange }: Props) {
+export function CodeEditor({ initialCode, autocomplete, onChange, onRun }: Props) {
+  const onRunRef = useRef(onRun);
+  onRunRef.current = onRun;
+  const handleMount: OnMount = (editor) => {
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
+      onRunRef.current(editor.getValue()),
+    );
+  };
   return (
     <Editor
+      onMount={handleMount}
       defaultLanguage="python"
       defaultValue={initialCode}
       theme="vs-dark"

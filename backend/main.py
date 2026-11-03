@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from backend.clock import Clock, SystemClock
 from backend.config import Config, load_config
 from backend.db import Store
+from backend.runner import Runner
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
 
@@ -31,6 +32,7 @@ def create_app(config: Config | None = None, clock: Clock | None = None) -> Fast
     manager = SessionManager(
         store=store,
         clock=clock or SystemClock(),
+        runner=Runner(config.runner),
         defaults=SessionDefaults(
             duration_min=config.default_duration_min,
             models=config.models,

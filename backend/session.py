@@ -7,6 +7,7 @@ monotonic clock), and emits server messages to whoever is subscribed.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import difflib
 import logging
@@ -17,6 +18,7 @@ from typing import Any
 from backend.clock import Clock
 from backend.config import ModelIds
 from backend.db import Event, SessionRecord, Store
+from backend.runner import Runner
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +58,16 @@ class LiveSession:
         *,
         store: Store,
         clock: Clock,
+        runner: Runner,
     ) -> None:
         self.record = record
         self._store = store
         self._clock = clock
+        self._runner = runner
         self._started_at_ms = clock.monotonic_ms()
         self._code = ""
+        self._snapshot_seq: int | None = None
+        self._run_task: asyncio.Task[None] | None = None
         self._listeners: list[Listener] = []
 
     @property
@@ -98,8 +104,16 @@ class LiveSession:
         kind = message.get("type")
         if kind == "code_update":
             await self._on_code_update(message)
+        elif kind == "run":
+            await self._on_run(message)
         else:
             await self._emit_error("unknown_message", f"Unknown message type: {kind!r}")
+
+    async def wait_for_run(self) -> None:
+        """Wait for the in-flight Run (if any) to finish; used by tests and shutdown."""
+        task = self._run_task
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
 
     def _now_ms(self) -> int:
         return max(0, self._clock.monotonic_ms() - self._started_at_ms)
@@ -126,9 +140,36 @@ class LiveSession:
             return
         self._snapshot(code)
 
+    async def _on_run(self, message: dict[str, Any]) -> None:
+        code, stdin = message.get("code"), message.get("stdin") or ""
+        if not isinstance(code, str) or not isinstance(stdin, str):
+            await self._emit_error("invalid_message", "run requires a string `code` (and `stdin`)")
+            return
+        # Only one Run per Session: a new one cancels the old.
+        if self._run_task is not None and not self._run_task.done():
+            self._run_task.cancel()
+            await asyncio.gather(self._run_task, return_exceptions=True)
+        self._snapshot(code)  # forced snapshot (deduped); the run event references its seq
+        assert self._snapshot_seq is not None
+        await self._emit({"type": "run_started", "snapshot_seq": self._snapshot_seq})
+        self._run_task = asyncio.create_task(self._execute(code, stdin, self._snapshot_seq))
+
+    async def _execute(self, code: str, stdin: str, snapshot_seq: int) -> None:
+        try:
+            result = await self._runner.run(code, stdin)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Runner failed for Session %s", self.id)
+            await self._emit_error("run_failed", "The Runner failed to execute your code")
+            return
+        payload = {"snapshot_seq": snapshot_seq, "stdin": stdin, **dataclasses.asdict(result)}
+        self._append("run", payload)
+        await self._emit({"type": "run_result", **payload})
+
     def _snapshot(self, code: str, *, t_ms: int | None = None) -> Event | None:
         """Record `code` as a code snapshot unless it equals the last one (dedup)."""
-        if code == self._code:
+        if code == self._code and self._snapshot_seq is not None:
             return None
         previous, self._code = self._code, code
         added, removed = _char_changes(previous, code)
@@ -140,11 +181,13 @@ class LiveSession:
                 tofile="after",
             )
         )
-        return self._append(
+        event = self._append(
             "code_snapshot",
             {"code": code, "diff_from_prev": diff, "chars_added": added, "chars_removed": removed},
             t_ms=t_ms,
         )
+        self._snapshot_seq = event.seq
+        return event
 
 
 class SessionManager:
@@ -155,10 +198,12 @@ class SessionManager:
         *,
         store: Store,
         clock: Clock,
+        runner: Runner,
         defaults: SessionDefaults,
     ) -> None:
         self._store = store
         self._clock = clock
+        self._runner = runner
         self._defaults = defaults
         self._live: dict[str, LiveSession] = {}
 
@@ -176,7 +221,7 @@ class SessionManager:
             private_notes=None,
             settings=settings,
         )
-        live = LiveSession(record, store=self._store, clock=self._clock)
+        live = LiveSession(record, store=self._store, clock=self._clock, runner=self._runner)
         live.begin()
         self._live[record.id] = live
         return live

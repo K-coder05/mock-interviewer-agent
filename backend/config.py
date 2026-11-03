@@ -25,11 +25,20 @@ class ModelIds:
 
 
 @dataclass(frozen=True)
+class RunnerConfig:
+    python: str = "python3"
+    timeout_s: float = 10
+    memory_mb: int = 512
+    output_cap_kb: int = 64
+
+
+@dataclass(frozen=True)
 class Config:
     api_key: str
     models: ModelIds
     default_duration_min: int
     db_path: Path
+    runner: RunnerConfig
     raw: dict[str, Any]
     """The full parsed config.yaml, for sections later modules read (runner, voice, ...)."""
 
@@ -51,6 +60,7 @@ def load_config(
 
     models = raw.get("models", {})
     db_path = Path(raw.get("storage", {}).get("db_path", "data/interviews.db"))
+    runner_raw = raw.get("runner", {})
     return Config(
         api_key=api_key,
         models=ModelIds(
@@ -58,5 +68,11 @@ def load_config(
         ),
         default_duration_min=int(raw.get("interview", {}).get("default_duration_min", 45)),
         db_path=db_path if db_path.is_absolute() else ROOT / db_path,
+        runner=RunnerConfig(
+            python=str(runner_raw.get("python", "python3")),
+            timeout_s=float(runner_raw.get("timeout_s", 10)),
+            memory_mb=int(runner_raw.get("memory_mb", 512)),
+            output_cap_kb=int(runner_raw.get("output_cap_kb", 64)),
+        ),
         raw=raw,
     )
