@@ -12,11 +12,11 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from backend.ids import new_id
 
-SessionStatus = str  # live | ended | abandoned | report_ready | report_failed
+SessionStatus = Literal["live", "ended", "abandoned", "report_ready", "report_failed"]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -62,6 +62,19 @@ class SessionRecord:
     private_notes: str | None
     settings: dict[str, Any]
     status: SessionStatus
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """Fields safe to send to the client (never private notes or the Problem Brief)."""
+        return {
+            "id": self.id,
+            "created_at": self.created_at,
+            "ended_at": self.ended_at,
+            "title": self.title,
+            "problem_md": self.problem_md,
+            "starter_code": self.starter_code,
+            "settings": self.settings,
+            "status": self.status,
+        }
 
 
 @dataclass(frozen=True)

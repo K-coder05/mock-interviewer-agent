@@ -15,14 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from backend.agent.model import ModelEvent, ModelRequest, TextDelta, ToolCall
+from backend.config import ModelIds
 from backend.db import Event, SessionRecord, Store
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
-DEFAULT_MODELS = {
-    "prep": "claude-opus-5-5",
-    "interviewer": "claude-sonnet-5-5",
-    "report": "claude-opus-5-5",
-}
+DEFAULT_MODELS = ModelIds(
+    prep="claude-opus-5-5", interviewer="claude-sonnet-5-5", report="claude-opus-5-5"
+)
 
 
 class FakeClock:
@@ -66,20 +65,21 @@ class ScriptedModel:
 class LiveSessionHarness:
     def __init__(self, db_path: Path) -> None:
         self.clock = FakeClock()
-        self.model = ScriptedModel()
+        self.model = ScriptedModel()  # injected into the Session engine once the Interviewer exists
         self.store = Store(db_path)
         self.manager = SessionManager(
             store=self.store,
             clock=self.clock,
-            defaults=SessionDefaults(duration_min=45, models=dict(DEFAULT_MODELS)),
-            model=self.model,
+            defaults=SessionDefaults(duration_min=45, models=DEFAULT_MODELS),
         )
         self.sent: dict[str, list[ServerMessage]] = {}
 
     def close(self) -> None:
         self.store.close()
 
-    def start(self, *, problem_md: str = "# Problem\n\nSolve it.", starter_code: str | None = None) -> str:
+    def start(
+        self, *, problem_md: str = "# Problem\n\nSolve it.", starter_code: str | None = None
+    ) -> str:
         """Create a Session and capture every server message it emits."""
         live = self.manager.create(problem_md=problem_md, starter_code=starter_code)
         messages = self.sent.setdefault(live.id, [])

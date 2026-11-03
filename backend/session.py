@@ -7,14 +7,18 @@ monotonic clock), and emits server messages to whoever is subscribed.
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from backend.agent.model import ModelClient
 from backend.clock import Clock
+from backend.config import ModelIds
 from backend.db import Event, SessionRecord, Store
+
+logger = logging.getLogger(__name__)
 
 ServerMessage = dict[str, Any]
 Listener = Callable[[ServerMessage], Awaitable[None]]
@@ -23,7 +27,7 @@ Listener = Callable[[ServerMessage], Awaitable[None]]
 @dataclass(frozen=True)
 class SessionDefaults:
     duration_min: int
-    models: dict[str, str]
+    models: ModelIds
 
 
 def _title_of(problem_md: str) -> str:
@@ -52,16 +56,12 @@ class LiveSession:
         *,
         store: Store,
         clock: Clock,
-        model: ModelClient | None,
-        started_at_ms: int,
-        code: str,
     ) -> None:
         self.record = record
         self._store = store
         self._clock = clock
-        self._model = model
-        self._started_at_ms = started_at_ms
-        self._code = code
+        self._started_at_ms = clock.monotonic_ms()
+        self._code = ""
         self._listeners: list[Listener] = []
 
     @property
@@ -71,7 +71,27 @@ class LiveSession:
     def subscribe(self, listener: Listener) -> Callable[[], None]:
         """Register a server-message listener; returns an unsubscribe function."""
         self._listeners.append(listener)
-        return lambda: self._listeners.remove(listener)
+
+        def unsubscribe() -> None:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        return unsubscribe
+
+    def begin(self) -> None:
+        """Record the Session's opening events at t=0: session_started, then any starter code."""
+        record = self.record
+        self._append(
+            "session_started",
+            {
+                "problem_md": record.problem_md,
+                "starter_code": record.starter_code,
+                "settings": record.settings,
+            },
+            t_ms=0,
+        )
+        if record.starter_code is not None:
+            self._snapshot(record.starter_code, t_ms=0)
 
     async def handle(self, message: dict[str, Any]) -> None:
         """Process one client message (the WebSocket payload)."""
@@ -90,7 +110,11 @@ class LiveSession:
 
     async def _emit(self, message: ServerMessage) -> None:
         for listener in list(self._listeners):
-            await listener(message)
+            try:
+                await listener(message)
+            except Exception:  # one dead connection must not starve the others
+                logger.warning("dropping failed listener for Session %s", self.id, exc_info=True)
+                self._listeners.remove(listener)
 
     async def _emit_error(self, code: str, message: str) -> None:
         await self._emit({"type": "error", "code": code, "message": message})
@@ -101,10 +125,6 @@ class LiveSession:
             await self._emit_error("invalid_message", "code_update requires a string `code`")
             return
         self._snapshot(code)
-
-    def record_starter_code(self, code: str) -> None:
-        """Starter code is always the first code snapshot, at t=0."""
-        self._snapshot(code, t_ms=0)
 
     def _snapshot(self, code: str, *, t_ms: int | None = None) -> Event | None:
         """Record `code` as a code snapshot unless it equals the last one (dedup)."""
@@ -136,12 +156,10 @@ class SessionManager:
         store: Store,
         clock: Clock,
         defaults: SessionDefaults,
-        model: ModelClient | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._defaults = defaults
-        self._model = model
         self._live: dict[str, LiveSession] = {}
 
     def create(self, *, problem_md: str, starter_code: str | None = None) -> LiveSession:
@@ -149,7 +167,7 @@ class SessionManager:
         settings: dict[str, Any] = {
             "duration_min": self._defaults.duration_min,
             "autocomplete": False,
-            "models": dict(self._defaults.models),
+            "models": dataclasses.asdict(self._defaults.models),
         }
         record = self._store.create_session(
             title=_title_of(problem_md),
@@ -158,22 +176,8 @@ class SessionManager:
             private_notes=None,
             settings=settings,
         )
-        live = LiveSession(
-            record,
-            store=self._store,
-            clock=self._clock,
-            model=self._model,
-            started_at_ms=self._clock.monotonic_ms(),
-            code="",
-        )
-        self._store.append_event(
-            record.id,
-            t_ms=0,
-            type="session_started",
-            payload={"problem_md": problem_md, "starter_code": starter, "settings": settings},
-        )
-        if starter is not None:
-            live.record_starter_code(starter)
+        live = LiveSession(record, store=self._store, clock=self._clock)
+        live.begin()
         self._live[record.id] = live
         return live
 

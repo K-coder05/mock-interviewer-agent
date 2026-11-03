@@ -33,11 +33,7 @@ def create_app(config: Config | None = None, clock: Clock | None = None) -> Fast
         clock=clock or SystemClock(),
         defaults=SessionDefaults(
             duration_min=config.default_duration_min,
-            models={
-                "prep": config.models.prep,
-                "interviewer": config.models.interviewer,
-                "report": config.models.report,
-            },
+            models=config.models,
         ),
     )
 
@@ -59,16 +55,7 @@ def create_app(config: Config | None = None, clock: Clock | None = None) -> Fast
         if record is None:
             raise HTTPException(status_code=404, detail="Session not found")
         return {
-            "session": {
-                "id": record.id,
-                "created_at": record.created_at,
-                "ended_at": record.ended_at,
-                "title": record.title,
-                "problem_md": record.problem_md,
-                "starter_code": record.starter_code,
-                "settings": record.settings,
-                "status": record.status,
-            },
+            "session": record.to_public_dict(),
             "events": [e.to_dict() for e in store.events(session_id)],
         }
 

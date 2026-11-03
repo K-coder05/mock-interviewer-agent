@@ -26,7 +26,8 @@ This ticket also establishes the Live Session test harness (message driver, fake
 **Commands:** `make install`, `make dev`, `make test` (pytest), `make typecheck` (mypy --strict + tsc), `make check`; single file: `uv run pytest tests/test_live_session.py`.
 
 **Notes for later tickets:**
-- `SessionManager` takes an optional `model: ModelClient`; production doesn't inject one yet. Ticket 03 adds the Anthropic-backed client (and the `anthropic` dependency) and should make it required.
+- The Session engine does not take a model yet (removed as speculative after review). `tests/harness.py` already builds a `ScriptedModel` as `harness.model`; ticket 03 should add a `model: ModelClient` param to `SessionManager`/`LiveSession`, pass `harness.model` in, and add the Anthropic-backed client (plus the `anthropic` dependency) for production.
+- Code review (two-axis) found no spec gaps. Fixed: single event-append path (`LiveSession.begin()`), typed `SessionStatus`, `ModelIds` passed through, idempotent unsubscribe, a failing listener no longer blocks the others. Left: char-level diff is O(n^2) (fine for interview-sized buffers); frontend `CodeSync` timing has no automated test (spec limits frontend tests to the echo guard); the unmount flush can be dropped if the socket is still connecting.
 - `Clock` only has `monotonic_ms()`. Timer/trigger tickets will need scheduling (e.g. `call_later` or a `tick()` the engine runs); extend `FakeClock` so `advance()` fires due callbacks.
 - `t_ms` is measured from Session creation. Ticket 04 starts the *timer* at the greeting; that's separate from the event-log time base.
 - Live Sessions are held in memory only; after a backend restart the WebSocket replies `session_not_live` and closes (reconnect/abandoned marking is ticket 13).
