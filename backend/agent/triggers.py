@@ -25,7 +25,7 @@ import re
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from backend.db import Event
 from backend.phases import FIRST_PHASE, OVERRUN_MIN, PHASES
@@ -53,6 +53,8 @@ class _Reason:
     """Not unprompted speech: the guardrails never hold it back."""
     description: str
     """How the turn message explains it to the Interviewer."""
+    retried: bool = False
+    """Held back by the guardrails, it waits and is retried (instead of being dropped)."""
 
 
 # Every Trigger reason, in coalescing priority: when Triggers merge into one call, the first
@@ -66,10 +68,12 @@ REASONS: dict[TriggerReason, _Reason] = {
     "typed_message_unanswered": _Reason(
         True, "your previous turn only called tools; reply to the candidate now"
     ),
-    "time": _Reason(False, "a time checkpoint"),
-    "stuck": _Reason(False, "the candidate looks stuck"),
+    "time": _Reason(False, "a time checkpoint", retried=True),
+    "stuck": _Reason(False, "the candidate looks stuck", retried=True),
     "run": _Reason(False, "the candidate's Run finished"),
-    "phase_overrun": _Reason(False, "the current Phase has run over its time guide"),
+    "phase_overrun": _Reason(
+        False, "the current Phase has run over its time guide", retried=True
+    ),
     "coding_pause": _Reason(
         False, "the candidate wrote a large chunk of code and has paused"
     ),
@@ -97,7 +101,10 @@ TIME_LEFT: tuple[tuple[TimeCheckpoint, int], ...] = (
     ("5_min_left", 5 * 60_000),
     ("10_min_left", 10 * 60_000),
 )
+# The last line of a traceback, e.g. "IndexError: list index out of range".
 _EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(:|$)")
+# Errors printed without a traceback header (a SyntaxError) still name an exception class.
+_EXCEPTION_NAME = re.compile(r"^[A-Za-z_][\w.]*(Error|Exception|Exit|Interrupt|Warning)(:|$)")
 DEFAULT_SILENCE_S: dict[str, float] = {"clarify": 45, "approach": 45, "implement": 90, "test": 60}
 
 
@@ -191,13 +198,20 @@ def _is_candidate_activity(event: Event) -> bool:
     return event.type == "phase_changed" and event.payload.get("by") == "user"
 
 
+class _RunReaction(NamedTuple):
+    due_ms: int
+    trigger: Trigger
+
+
 def _exception(stderr: str) -> str | None:
     """The exception a failed Run ended with: its traceback's last line ("IndexError: list
     index out of range"), or None if stderr doesn't end in one."""
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    if "Traceback (most recent call last):" not in stderr or not _EXCEPTION_LINE.match(lines[-1]):
+    if not lines:
         return None
-    return lines[-1]
+    traceback = "Traceback (most recent call last):" in stderr
+    pattern = _EXCEPTION_LINE if traceback else _EXCEPTION_NAME
+    return lines[-1] if pattern.match(lines[-1]) else None
 
 
 def _lines_changed(old: str, new: str) -> int:
@@ -225,10 +239,10 @@ class TriggerEngine:
         self._checkpoints: set[TimeCheckpoint] = set()
         self._nudges_ms: list[int] = []
         self._held_back: list[Trigger] = []  # time/overrun Triggers waiting for the guardrails
-        self._run_reaction: tuple[int, Trigger] | None = None  # (due at, Trigger) for the last Run
+        self._run_reaction: _RunReaction | None = None  # the last Run's, waiting for its delay
         self._failing_streak: list[str | None] = []  # exception of each failing Run since a pass
         self._code = ""
-        self._pause_base = ""  # the code as of the last coding pause (or the start)
+        self._pause_base = ""  # the code at the start of the current burst
         self._last_code_ms = 0  # the last edit or Run
         self._pause_checked_ms: int | None = None  # the edit whose pause was already measured
 
@@ -288,17 +302,16 @@ class TriggerEngine:
         """The reaction to the last Run, still waiting for its delay or held back by the
         guardrails, taken now to ride along with a reply to the Candidate (speech during the
         delay merges with the Run)."""
-        waiting = [t for t in self._held_back if t.reason == "stuck"]
-        self._held_back = [t for t in self._held_back if t.reason != "stuck"]
+        waiting = self._take_held_back_stuck()
         if self._run_reaction is not None:
-            waiting.append(self._run_reaction[1])
+            waiting.append(self._run_reaction.trigger)
             self._run_reaction = None
         return waiting
 
     def hold_back(self, trigger: Trigger) -> None:
-        """A guardrail suppressed `trigger`. Time checkpoints and Phase overruns are retried once
-        the guardrails allow; a silence is not (one Nudge per silence)."""
-        if trigger.reason in ("time", "phase_overrun", "stuck") and trigger not in self._held_back:
+        """A guardrail suppressed `trigger`. Reasons marked `retried` in REASONS wait and are
+        retried once the guardrails allow; the others are dropped (one Nudge per silence)."""
+        if REASONS[trigger.reason].retried and trigger not in self._held_back:
             self._held_back.append(trigger)
 
     def suppression(self, now_ms: int) -> Suppression | None:
@@ -341,7 +354,7 @@ class TriggerEngine:
     def _observe_run(self, event: Event) -> None:
         """Each Run gets one reaction: `stuck` when this Run makes the Candidate look stuck,
         else `run`. A held-back stuck Trigger is moot once a newer Run arrives."""
-        self._held_back = [t for t in self._held_back if t.reason != "stuck"]
+        self._take_held_back_stuck()
         p = event.payload
         if p.get("exit_code") == 0 and not p.get("timed_out"):
             self._failing_streak = []
@@ -359,12 +372,17 @@ class TriggerEngine:
         if self._timer_started_ms is None or self._stopped:
             return
         due_ms = event.t_ms + round(self._config.run_reaction_delay_s * 1000)
-        self._run_reaction = (due_ms, trigger)  # a newer Run replaces a waiting reaction
+        self._run_reaction = _RunReaction(due_ms, trigger)  # replaces a waiting one
+
+    def _take_held_back_stuck(self) -> list[Trigger]:
+        stuck = [t for t in self._held_back if t.reason == "stuck"]
+        self._held_back = [t for t in self._held_back if t.reason != "stuck"]
+        return stuck
 
     def _run_finished(self, now_ms: int) -> Sequence[Trigger]:
-        if self._run_reaction is None or now_ms < self._run_reaction[0]:
+        if self._run_reaction is None or now_ms < self._run_reaction.due_ms:
             return []
-        trigger, self._run_reaction = self._run_reaction[1], None
+        trigger, self._run_reaction = self._run_reaction.trigger, None
         return [trigger]
 
     def _phase_overrun(self, now_ms: int) -> Sequence[Trigger]:
@@ -377,17 +395,17 @@ class TriggerEngine:
         return [Trigger("phase_overrun", self._phase)]
 
     def _coding_pause(self, now_ms: int) -> Sequence[Trigger]:
-        """Enough lines changed since the last coding pause, then no edit or Run for a while.
-        Measured once per pause; a suppressed one is dropped (its chunk is not asked about)."""
+        """A burst of code (edits with no idle gap between them) that changed enough lines, then
+        no edit or Run for a while. Every idle gap ends a burst, big enough or not; a suppressed
+        coding pause is dropped (its chunk is not asked about)."""
         if self._pause_checked_ms == self._last_code_ms:
             return []
         if now_ms - self._last_code_ms < self._config.coding_pause_idle_s * 1000:
             return []
         self._pause_checked_ms = self._last_code_ms
-        if _lines_changed(self._pause_base, self._code) < self._config.coding_pause_lines:
-            return []
+        burst = _lines_changed(self._pause_base, self._code)
         self._pause_base = self._code
-        return [Trigger("coding_pause")]
+        return [Trigger("coding_pause")] if burst >= self._config.coding_pause_lines else []
 
     def _silence(self, now_ms: int) -> Sequence[Trigger]:
         threshold_s = self._config.silence_nudge_s.get(self._phase)

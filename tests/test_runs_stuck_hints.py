@@ -112,6 +112,17 @@ async def test_the_same_exception_twice_means_stuck(harness: LiveSessionHarness)
     ]
 
 
+async def test_the_same_syntax_error_twice_means_stuck(harness: LiveSessionHarness) -> None:
+    session_id = await _implementing(harness)  # a SyntaxError is printed without a traceback
+    await _run_and_react(harness, session_id, "def f(:\n")
+    await _run_and_react(harness, session_id, "def f(:\n    pass\n")
+
+    assert [t["detail"] for t in _triggers(harness, session_id)] == [
+        "failed",
+        "repeated_exception",
+    ]
+
+
 async def test_a_stuck_trigger_held_back_by_the_cooldown_is_retried(
     harness: LiveSessionHarness,
 ) -> None:
@@ -148,7 +159,14 @@ async def test_a_large_chunk_of_code_then_a_pause_asks_for_a_walkthrough(
     await harness.elapse(session_id, 30)
     assert _triggers(harness, session_id) == []  # 24 lines is not enough
 
+    # the pause ended that burst: the next one counts from the code as of the pause
     await harness.send(session_id, "code_update", code=_lines(25))
+    await harness.elapse(session_id, 30)
+    assert _triggers(harness, session_id) == []
+
+    await harness.send(session_id, "code_update", code=_lines(40))
+    harness.advance(20)
+    await harness.send(session_id, "code_update", code=_lines(50))
     await harness.elapse(session_id, 29)
     assert _triggers(harness, session_id) == []
 
@@ -158,11 +176,6 @@ async def test_a_large_chunk_of_code_then_a_pause_asks_for_a_walkthrough(
         {"reason": "coding_pause", "proactive": True, "outcome": "spoke"}
     ]
     assert "<trigger>coding_pause" in _last_turn(harness)
-
-    # the next walkthrough needs another 25 changed lines
-    await harness.send(session_id, "code_update", code=_lines(20) + _lines(10, 100))
-    await harness.elapse(session_id, 60)
-    assert len(_triggers(harness, session_id)) == 1
 
 
 async def test_the_decision_context_has_the_last_three_runs_numbered_code_and_the_last_diff(
@@ -181,7 +194,8 @@ async def test_the_decision_context_has_the_last_three_runs_numbered_code_and_th
     assert all(f"run {i}" in turn for i in (1, 2, 3))
     assert "  1 | def solve(nums):" in turn and "  2 |     return nums" in turn
     last_diff = turn.split("<last_diff>")[1].split("</last_diff>")[0]
-    assert "-print('run 3')" in last_diff and "+    return nums" in last_diff
+    assert "+    return nums" in last_diff  # everything since the Interviewer last spoke
+    assert "-print('run 3')" not in last_diff  # the greeting came before any code
 
 
 def _hint(level: int, text: str, *, requested: bool = False) -> ToolCall:

@@ -7,6 +7,7 @@ decision call; there is no running message history.
 
 from __future__ import annotations
 
+import difflib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -97,6 +98,14 @@ def _clip(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[:limit] + f"\n[... {len(text) - limit} more chars]"
 
 
+def _diff(old: str, new: str) -> str:
+    return "".join(
+        difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True), "before", "after"
+        )
+    )
+
+
 MAX_HINT_LEVEL = 4
 
 
@@ -130,13 +139,15 @@ def build_turn_message(
     clarifications: list[str] = []
     transcript: list[str] = []
     code = ""
-    last_diff = ""
+    code_when_you_spoke = ""  # the code as of the Interviewer's last utterance
     runs: list[Event] = []
     hints: list[str] = []
     notes: list[str] = []
     for event in events:
         p = event.payload
         if event.type == "utterance":
+            if p["speaker"] == "interviewer":
+                code_when_you_spoke = code
             who = "Interviewer" if p["speaker"] == "interviewer" else "Candidate"
             via = " (typed)" if p.get("channel") == "text" and who == "Candidate" else ""
             transcript.append(f"[{_clock(event.t_ms)}] {who}{via}: {p['text']}")
@@ -144,7 +155,6 @@ def build_turn_message(
             clarifications.append(f"- Q: {p['question']} A: {p['answer']} (by {p['by']})")
         elif event.type == "code_snapshot":
             code = p["code"]
-            last_diff = str(p.get("diff_from_prev", ""))
         elif event.type == "run":
             runs.append(event)
         elif event.type == "hint_given":
@@ -186,7 +196,9 @@ def build_turn_message(
             "<your_notes>\n" + ("\n".join(notes) or "(none yet)") + "\n</your_notes>",
             "<transcript>\n" + ("\n".join(transcript) or "(nothing said yet)") + "\n</transcript>",
             "<current_code>\n" + (numbered or "(empty)") + "\n</current_code>",
-            "<last_diff>\n" + (_clip(last_diff) or "(no edits yet)") + "\n</last_diff>",
+            "<last_diff>\nThe candidate's edits since you last spoke:\n"
+            + (_clip(_diff(code_when_you_spoke, code)) or "(none)")
+            + "\n</last_diff>",
             "<recent_runs>\n" + ("\n\n".join(run_lines) or "(no runs yet)") + "\n</recent_runs>",
             "<trigger>"
             + "\n".join(
