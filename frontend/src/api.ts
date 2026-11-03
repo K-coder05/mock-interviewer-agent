@@ -21,6 +21,7 @@ export interface SessionInfo {
     autocomplete: boolean;
     style: StyleSetting;
     models: Record<string, string>;
+    voice?: { utterance_silence_ms: number };
   };
   status: "live" | "ended" | "abandoned" | "report_ready" | "report_failed";
 }

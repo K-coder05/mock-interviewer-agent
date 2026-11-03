@@ -22,7 +22,7 @@ from backend.agent.triggers import Trigger, TriggerConfig, TriggerEngine, coales
 from backend.agent.model import ModelClient, ModelError
 from backend.agent.prep import prepare_problem_brief
 from backend.clock import Clock
-from backend.config import ModelIds
+from backend.config import ModelIds, VoiceConfig
 from backend.db import Event, SessionRecord, Store
 from backend.feedback.metrics import LARGE_PASTE_CHARS
 from backend.feedback.generator import ReportGenerator
@@ -33,6 +33,8 @@ from backend.runner import Runner
 logger = logging.getLogger(__name__)
 
 Speaker = Literal["user", "interviewer"]
+Channel = Literal["voice", "text"]
+CHANNELS: tuple[Channel, ...] = ("voice", "text")
 ServerMessage = dict[str, Any]
 Listener = Callable[[ServerMessage], Awaitable[None]]
 
@@ -50,6 +52,7 @@ class SessionDefaults:
     models: ModelIds
     user_phase_lock_s: int = 120
     triggers: TriggerConfig = dataclasses.field(default_factory=TriggerConfig)
+    voice: VoiceConfig = dataclasses.field(default_factory=VoiceConfig)
 
 
 def _title_of(problem_md: str) -> str:
@@ -119,6 +122,7 @@ class LiveSession:
         self._warned = False
         self._time_up = False
         self._ending = False
+        self._muted = False
 
     @property
     def id(self) -> str:
@@ -172,6 +176,8 @@ class LiveSession:
             await self._on_run(message)
         elif kind == "utterance":
             await self._on_utterance(message)
+        elif kind == "speaking":
+            self._triggers.set_speaking(bool(message.get("active")), self._now_ms())
         elif kind == "set_phase":
             await self._on_set_phase(message)
         elif kind == "ui_event":
@@ -317,10 +323,17 @@ class LiveSession:
 
     def _on_ui_event(self, message: dict[str, Any]) -> None:
         """Client-observed events. A paste over `LARGE_PASTE_CHARS` is logged (never penalized);
-        smaller pastes and unknown events are ignored."""
-        text = message.get("text")
-        if message.get("event") == "paste" and isinstance(text, str) and len(text) > LARGE_PASTE_CHARS:
+        smaller pastes and unknown events are ignored. Muting or unmuting the mic (`mute` with
+        `muted`) is logged as `mic_muted`/`mic_unmuted` when it changes the state."""
+        event, text = message.get("event"), message.get("text")
+        if event == "paste" and isinstance(text, str) and len(text) > LARGE_PASTE_CHARS:
             self._append("paste", {"length": len(text), "text": text[:PASTE_TEXT_CAP]})
+        elif event == "mute" and isinstance(muted := message.get("muted"), bool):
+            if muted != self._muted:
+                self._muted = muted
+                self._append("mic_muted" if muted else "mic_unmuted", {})
+                if muted:  # a muted mic hears nothing: the Candidate isn't speaking
+                    self._triggers.set_speaking(False, self._now_ms())
 
     async def _on_set_phase(self, message: dict[str, Any]) -> None:
         phase = message.get("phase")
@@ -347,14 +360,25 @@ class LiveSession:
         await self._emit({"type": "phase", "phase": phase, "by": by})
 
     async def _on_utterance(self, message: dict[str, Any]) -> None:
+        """A typed message (always gets a reply) or a final spoken utterance (heard; the
+        Interviewer decides whether to respond). A spoken utterance's `start_ms`/`end_ms` are
+        in the browser's clock: only its length is kept, ending now."""
         text, channel = message.get("text"), message.get("channel", "text")
-        if not isinstance(text, str) or not text.strip() or channel != "text":
+        if not isinstance(text, str) or not text.strip() or channel not in CHANNELS:
             await self._emit_error(
-                "invalid_message", "utterance requires non-empty `text` and channel 'text'"
+                "invalid_message",
+                "utterance requires non-empty `text` and channel 'voice' or 'text'",
             )
             return
-        self._append_utterance("user", text.strip(), self._now_ms())
-        self._request_reply(Trigger("typed_message"))  # a typed message always gets a reply
+        now = self._now_ms()
+        start = now
+        if channel == "voice":
+            client_start, client_end = message.get("start_ms"), message.get("end_ms")
+            if isinstance(client_start, (int, float)) and isinstance(client_end, (int, float)):
+                start = max(0, now - max(0, round(client_end - client_start)))
+        self._append_utterance("user", text.strip(), start, channel=channel)
+        # a typed message always gets a reply
+        self._request_reply(Trigger("typed_message" if channel == "text" else "utterance"))
         for trigger in self._triggers.merge_waiting():  # e.g. a Run's reaction: one reply
             self._request_reply(trigger)
 
@@ -389,7 +413,7 @@ class LiveSession:
             "proactive": lead.proactive,
             **({"coalesced": [t.to_payload() for t in others]} if others else {}),
         }
-        if lead.proactive and (held := self._triggers.suppression(self._now_ms())) is not None:
+        if (held := self._triggers.suppression(lead, self._now_ms())) is not None:
             self._append("trigger", {**logged, "outcome": "suppressed", "suppressed_by": held})
             for trigger in (lead, *others):
                 self._triggers.hold_back(trigger)
@@ -463,12 +487,18 @@ class LiveSession:
         return decision
 
     def _append_utterance(
-        self, speaker: Speaker, text: str, start_ms: int, *, msg_id: str | None = None
+        self,
+        speaker: Speaker,
+        text: str,
+        start_ms: int,
+        *,
+        channel: Channel = "text",
+        msg_id: str | None = None,
     ) -> Event:
         now = self._now_ms()
         payload: dict[str, Any] = {
             "speaker": speaker,
-            "channel": "text",
+            "channel": channel,
             "text": text,
             "start_ms": start_ms,
             "end_ms": now,
@@ -579,6 +609,7 @@ class SessionManager:
             "autocomplete": autocomplete,
             "user_phase_lock_s": self._defaults.user_phase_lock_s,
             "proactive": self._defaults.triggers.to_settings(),
+            "voice": self._defaults.voice.to_settings(),
             "style": style.to_settings(),
             "models": dataclasses.asdict(self._defaults.models),
         }

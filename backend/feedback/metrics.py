@@ -19,6 +19,9 @@ SILENCE_GAP_MS = 60_000
 LARGE_PASTE_CHARS = 200
 """A paste longer than this is logged as a `paste` event (and shown in the metrics)."""
 
+LONG_MUTE_MS = 2 * 60_000
+"""Muted for longer than this in total, the Report notes it under Communication."""
+
 HINT_LEVELS = (1, 2, 3, 4)
 _EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Warning))\b")
 

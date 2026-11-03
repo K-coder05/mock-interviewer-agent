@@ -1,6 +1,6 @@
 // Decides when the editor buffer is sent to the backend: after `idleMs` without typing, or at
 // most every `maxWaitMs` while typing continuously, whichever comes first. `flush()` sends
-// immediately (later tickets call it before each final utterance and each Run). An unchanged
+// immediately (before each final utterance and each Run). An unchanged
 // buffer is never re-sent; the backend dedupes too.
 
 export interface CodeSyncOptions {

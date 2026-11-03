@@ -9,11 +9,15 @@ order as events are written) and keeps only what it needs to decide:
   silence, each checkpoint once, one overrun per stay in a Phase, one coding pause per chunk.
 - `merge_waiting()`: a Run reaction still waiting, taken to ride along with a reply to the
   Candidate instead of firing on its own.
-- `suppression(now_ms)`: whether the guardrails hold back an unprompted (proactive) utterance
-  right now: the cooldown after the Interviewer last spoke, and the cap on Nudges per 5 minutes.
+- `suppression(trigger, now_ms)`: whether the guardrails hold back a call for `trigger` right
+  now: never while the Candidate is speaking (for unprompted speech and spoken replies), and for
+  unprompted (proactive) speech also the cooldown after the Interviewer last spoke and the cap on
+  Nudges per 5 minutes.
+- `set_speaking(active, now_ms)`: the client's `speaking` signal (from interim speech results).
+  It is momentary and not logged; everything else comes from events.
 
-Everything is derived from events (including the `trigger` events the Session logs), never from
-Session internals. The Session engine owns the
+Everything else is derived from events (including the `trigger` events the Session logs), never
+from Session internals. The Session engine owns the
 reply queue: it coalesces pending Triggers into one decision call (`coalesce`), checks the
 guardrails when the call is about to start and logs a `trigger` event with the outcome.
 """
@@ -36,6 +40,7 @@ TriggerReason = Literal[
     "session_start",
     "typed_message",
     "typed_message_unanswered",
+    "utterance",
     "time",
     "stuck",
     "run",
@@ -44,7 +49,7 @@ TriggerReason = Literal[
     "silence",
 ]
 TimeCheckpoint = Literal["half_time_no_code", "10_min_left", "5_min_left"]
-Suppression = Literal["cooldown", "cap"]
+Suppression = Literal["speaking", "cooldown", "cap"]
 
 
 @dataclass(frozen=True)
@@ -55,19 +60,31 @@ class _Reason:
     """How the turn message explains it to the Interviewer."""
     retried: bool = False
     """Held back by the guardrails, it waits and is retried (instead of being dropped)."""
+    waits_for_quiet: bool = True
+    """Never starts while the Candidate is speaking. Every proactive reason waits."""
 
 
 # Every Trigger reason, in coalescing priority: when Triggers merge into one call, the first
 # reason in this order leads it. Every exempt reason comes before every proactive one, so a batch
 # holding any exempt Trigger is exempt.
+#
+# A final spoken utterance is a turn in the conversation, not unprompted speech: like a typed
+# message it is exempt from the cooldown and cap (the Interviewer answers a question asked right
+# after it spoke), but the model may stay silent (mid-coding narration), and it waits for quiet:
+# a reply never starts while the Candidate is speaking again (their next utterance asks anew).
 REASONS: dict[TriggerReason, _Reason] = {
-    "session_end": _Reason(True, "the Session is over"),
-    "time_up": _Reason(True, "time has run out"),
-    "session_start": _Reason(True, "the Session is starting"),
-    "typed_message": _Reason(True, "the candidate typed a message to you"),
-    "typed_message_unanswered": _Reason(
-        True, "your previous turn only called tools; reply to the candidate now"
+    "session_end": _Reason(True, "the Session is over", waits_for_quiet=False),
+    "time_up": _Reason(True, "time has run out", waits_for_quiet=False),
+    "session_start": _Reason(True, "the Session is starting", waits_for_quiet=False),
+    "typed_message": _Reason(
+        True, "the candidate typed a message to you", waits_for_quiet=False
     ),
+    "typed_message_unanswered": _Reason(
+        True,
+        "your previous turn only called tools; reply to the candidate now",
+        waits_for_quiet=False,
+    ),
+    "utterance": _Reason(True, "the candidate said something out loud"),
     "time": _Reason(False, "a time checkpoint", retried=True),
     "stuck": _Reason(False, "the candidate looks stuck", retried=True),
     "run": _Reason(False, "the candidate's Run finished"),
@@ -82,6 +99,9 @@ REASONS: dict[TriggerReason, _Reason] = {
     ),
 }
 _PRIORITY = list(REASONS)
+assert all(r.exempt or r.waits_for_quiet for r in REASONS.values()), "proactive speech waits"
+SPEAKING_WINDOW_MS = 1500
+"""The Candidate counts as speaking for this long after their last interim speech result."""
 CHECKPOINTS: dict[TimeCheckpoint, str] = {
     "half_time_no_code": "half the time has passed and the candidate has written no code yet",
     "10_min_left": "10 minutes are left",
@@ -153,6 +173,9 @@ class TriggerConfig:
     """Failing Runs in a row that count as stuck (so does the same exception twice)."""
     coding_pause_lines: int = 25
     coding_pause_idle_s: float = 30
+    muted_silence_multiplier: float = 2
+    """While the mic is muted, silence counts only code activity, with thresholds this many
+    times longer."""
 
     def to_settings(self) -> dict[str, Any]:
         return {
@@ -163,6 +186,7 @@ class TriggerConfig:
             "stuck_failing_runs": self.stuck_failing_runs,
             "coding_pause_lines": self.coding_pause_lines,
             "coding_pause_idle_s": self.coding_pause_idle_s,
+            "muted_silence_multiplier": self.muted_silence_multiplier,
         }
 
     @classmethod
@@ -186,16 +210,26 @@ class TriggerConfig:
             coding_pause_idle_s=float(
                 value.get("coding_pause_idle_s", default.coding_pause_idle_s)
             ),
+            muted_silence_multiplier=float(
+                value.get("muted_silence_multiplier", default.muted_silence_multiplier)
+            ),
         )
 
 
-# Events that show the Candidate is engaged; any of them ends a silence.
+# Events that show the Candidate is engaged; any of them ends a silence. Muting or unmuting the
+# mic is a deliberate act too: it restarts the silence under the new rules.
 def _is_candidate_activity(event: Event) -> bool:
-    if event.type in ("code_snapshot", "run", "paste"):
-        return event.t_ms > 0  # the starter snapshot at t=0 is not the Candidate's doing
+    if _is_code_activity(event) or event.type in ("mic_muted", "mic_unmuted"):
+        return True
     if event.type == "utterance":
         return event.payload.get("speaker") == "user"
     return event.type == "phase_changed" and event.payload.get("by") == "user"
+
+
+# The only activity that ends a silence while the mic is muted.
+def _is_code_activity(event: Event) -> bool:
+    # the starter snapshot at t=0 is not the Candidate's doing
+    return event.type in ("code_snapshot", "run", "paste") and event.t_ms > 0
 
 
 class _RunReaction(NamedTuple):
@@ -234,6 +268,9 @@ class TriggerEngine:
         self._phase_since_ms = 0
         self._overrun_fired_since: int | None = None
         self._last_activity_ms = 0
+        self._last_code_activity_ms = 0  # also mic toggles: what a muted silence counts from
+        self._muted = False
+        self._speaking_until_ms = 0
         self._last_interviewer_ms: int | None = None
         self._silence_open = True  # no silence Trigger has fired since the last activity
         self._checkpoints: set[TimeCheckpoint] = set()
@@ -265,6 +302,12 @@ class TriggerEngine:
             self._phase, self._phase_since_ms = str(p["to"]), event.t_ms
         elif event.type == "utterance" and p.get("speaker") == "interviewer":
             self._last_interviewer_ms = event.t_ms
+        elif event.type == "utterance" and p.get("channel") == "voice":
+            # a final utterance ends the speech it came from (speech after it says so anew)
+            self._speaking_until_ms = min(self._speaking_until_ms, event.t_ms)
+        elif event.type in ("mic_muted", "mic_unmuted"):
+            self._muted = event.type == "mic_muted"
+            self._last_code_activity_ms = max(self._last_code_activity_ms, event.t_ms)
         elif event.type == "trigger" and p.get("outcome") == "spoke" and p.get("proactive"):
             self._nudges_ms.append(event.t_ms)
         elif event.type == "run":
@@ -274,6 +317,17 @@ class TriggerEngine:
             self._silence_open = True
             if event.type in ("code_snapshot", "run"):
                 self._last_code_ms = max(self._last_code_ms, event.t_ms)
+        if _is_code_activity(event):
+            self._last_code_activity_ms = max(self._last_code_activity_ms, event.t_ms)
+
+    def set_speaking(self, active: bool, now_ms: int) -> None:
+        """The Candidate's interim speech (`active`), or its end. Speech counts for
+        SPEAKING_WINDOW_MS after the last interim result, so a lost `active: false` can't block
+        the Interviewer for good."""
+        self._speaking_until_ms = now_ms + SPEAKING_WINDOW_MS if active else now_ms
+
+    def speaking(self, now_ms: int) -> bool:
+        return now_ms < self._speaking_until_ms
 
     def due(self, now_ms: int) -> list[Trigger]:
         """The proactive Triggers that fire at `now_ms`; each is marked fired. Nothing fires
@@ -293,9 +347,8 @@ class TriggerEngine:
         self._held_back = [
             t for t in self._held_back if t.reason != "phase_overrun" or t.detail == self._phase
         ]
-        retried: list[Trigger] = []
-        if self._held_back and self.suppression(now_ms) is None:
-            retried, self._held_back = self._held_back, []
+        retried = [t for t in self._held_back if self.suppression(t, now_ms) is None]
+        self._held_back = [t for t in self._held_back if t not in retried]
         return [*retried, *fresh]
 
     def merge_waiting(self) -> list[Trigger]:
@@ -314,8 +367,15 @@ class TriggerEngine:
         if REASONS[trigger.reason].retried and trigger not in self._held_back:
             self._held_back.append(trigger)
 
-    def suppression(self, now_ms: int) -> Suppression | None:
-        """Which guardrail holds back an unprompted utterance now, if any."""
+    def suppression(self, trigger: Trigger, now_ms: int) -> Suppression | None:
+        """Which guardrail holds back a call for `trigger` now, if any: never while the
+        Candidate is speaking (reasons that wait for quiet); for unprompted speech also the
+        cooldown and the cap."""
+        reason = REASONS[trigger.reason]
+        if reason.waits_for_quiet and self.speaking(now_ms):
+            return "speaking"
+        if reason.exempt:
+            return None
         cooldown_ms = self._config.proactive_cooldown_s * 1000
         last = self._last_interviewer_ms
         if last is not None and now_ms - last < cooldown_ms:
@@ -412,8 +472,12 @@ class TriggerEngine:
         if threshold_s is None or not self._silence_open:
             return []
         assert self._timer_started_ms is not None
+        activity = self._last_activity_ms
+        if self._muted:  # speech can't be heard: only code activity counts, for longer
+            activity = self._last_code_activity_ms
+            threshold_s *= self._config.muted_silence_multiplier
         # The Candidate always gets the full threshold to answer the Interviewer's last words.
-        since = max(self._last_activity_ms, self._last_interviewer_ms or 0, self._timer_started_ms)
+        since = max(activity, self._last_interviewer_ms or 0, self._timer_started_ms)
         if now_ms - since < threshold_s * 1000:
             return []
         self._silence_open = False

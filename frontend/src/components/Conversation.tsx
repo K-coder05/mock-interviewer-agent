@@ -9,17 +9,19 @@ export interface TranscriptEntry {
 
 interface Props {
   entries: TranscriptEntry[];
+  /** The Candidate's speech so far, not yet final (shown in gray). */
+  interim?: string;
   onSend: (text: string) => void;
   disabled?: boolean;
 }
 
-export function Conversation({ entries, onSend, disabled = false }: Props) {
+export function Conversation({ entries, interim = "", onSend, disabled = false }: Props) {
   const [draft, setDraft] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [entries]);
+  }, [entries, interim]);
 
   function send(event: FormEvent) {
     event.preventDefault();
@@ -39,6 +41,12 @@ export function Conversation({ entries, onSend, disabled = false }: Props) {
             {entry.text}
           </p>
         ))}
+        {interim && (
+          <p className="turn user interim">
+            <span className="speaker">You</span>
+            {interim}
+          </p>
+        )}
         <div ref={endRef} />
       </div>
       <form className="composer" onSubmit={send}>

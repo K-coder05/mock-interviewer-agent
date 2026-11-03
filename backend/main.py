@@ -71,6 +71,7 @@ def create_app(
             user_phase_lock_s=config.user_phase_lock_s,
             models=config.models,
             triggers=config.triggers,
+            voice=config.voice,
         ),
     )
 

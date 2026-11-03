@@ -4,12 +4,29 @@
 
 **Blocked by:** 09 (Proactive Interviewer: Triggers, guardrails and Nudges)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Speech-provider interface (start, stop, interim, final with timings) backed by browser speech recognition, auto-restarting while the Session is live
-- [ ] Utterance boundary: final result or 1.2 s silence; logged as `utterance` with `channel: voice`
-- [ ] Client sends `speaking` from interim results; no proactive speech while speaking (interim within 1.5 s)
-- [ ] Frontend flushes `code_update` before every final utterance
-- [ ] Mute/unmute logged; while muted the silence trigger uses code activity only with the configured multiplier (2×)
-- [ ] Muted-time metric; Report notes it under Communication when over 2 min
-- [ ] Live Session tests cover the never-interrupt guard and muted silence behavior
+- [x] Speech-provider interface (start, stop, interim, final with timings) backed by browser speech recognition, auto-restarting while the Session is live
+- [x] Utterance boundary: final result or 1.2 s silence; logged as `utterance` with `channel: voice`
+- [x] Client sends `speaking` from interim results; no proactive speech while speaking (interim within 1.5 s)
+- [x] Frontend flushes `code_update` before every final utterance
+- [x] Mute/unmute logged; while muted the silence trigger uses code activity only with the configured multiplier (2×)
+- [x] Muted-time metric; Report notes it under Communication when over 2 min
+- [x] Live Session tests cover the never-interrupt guard and muted silence behavior
+
+## Comments
+
+**Built (ticket 11):**
+- Frontend: `frontend/src/voice/speechProvider.ts`: `SpeechProvider` (`start`/`stop`) with callbacks `onInterim(text)`, `onFinal(text, startMs, endMs)` (browser clock) and `onError`; `WebSpeechProvider` (continuous, interim results, restarts on `onend` while listening, gives up on permission/device errors). Utterance boundary: a final result, or `utterance_silence_ms` (1200, `config.yaml` `voice`, stored in `settings.voice`) with no new result, when the interim text is emitted as final and the engine is aborted/restarted so it can't finalize the same words again. `InterviewPage`: interim speech in gray at the end of the transcript, finals in black; sends `speaking {active: true}` from interim results (at most every 500 ms), then `speaking {active: false}`, a `code_update` flush and `utterance {channel: "voice", start_ms, end_ms}` for each final. Mic button in the top bar (Mic on / Mic muted; "Mic off" with a note when the browser has no Web Speech), sends `ui_event {event: "mute", muted}`; the mute state is restored from the log on reload.
+- Session: `utterance` accepts `channel: "voice"`; only its length is taken from the client timings (start = now - (end - start), end = now). Logged as `utterance {speaker: user, channel: voice}` and fires a new `utterance` Trigger (also takes a waiting Run reaction via `merge_waiting`, the ticket 10 note). `speaking` -> `TriggerEngine.set_speaking` (momentary state, not logged). `ui_event mute` -> `mic_muted`/`mic_unmuted`, only on a change.
+- Trigger engine: `REASONS` gained `waits_for_quiet` (never start while the Candidate is speaking: any interim result within `SPEAKING_WINDOW_MS` = 1.5 s, cleared by `speaking: false`, a final voice utterance or muting). `suppression(trigger, now_ms)` now takes the Trigger and can return `speaking`. Every proactive reason waits for quiet; typed messages, start/time-up/end don't.
+- **Decision (direct spoken questions):** a final spoken utterance is a conversational turn, not unprompted speech: `utterance` is exempt from the cooldown and cap (otherwise an answer to the Interviewer's own question would be swallowed by the 45 s cooldown), not a Nudge, but waits for quiet, and the model may `stay_silent` (prompt: reply to questions, being addressed or a finished thought; stay silent during narration). Suppressed by speech it is dropped: the Candidate's next utterance asks again.
+- Muted silence: while muted only code activity (snapshot, Run, paste) ends a silence and the Phase threshold is multiplied by `muted_silence_multiplier` (2, now in `TriggerConfig`/`settings.proactive`). Muting/unmuting itself restarts the silence.
+- Report: `muted_ms` (ticket 07) now fed by real events; over 2 min (`metrics.LONG_MUTE_MS`) the Communication rubric row gets a deterministic `note` ("Your mic was muted for m:ss in total..."); the timeline shows mute/unmute entries and the Report prompt says muted stretches left no think-aloud evidence. Interviewer prompt: voice section (read past speech-recognition errors on technical terms; when to respond to an `utterance`).
+- Tests: `tests/test_voice_input.py` (Live Session: voice utterance logging/timing, optional reply, exempt from cooldown/cap, merge with Run reaction, validation, never-while-speaking for a Nudge/held-back checkpoint/spoken reply, typed always answered, mute logging, muted doubled code-only silence, unmute; Report seam: muted note over/at 2 min, live mute -> metric). Harness: `speak()`, `speaking()`, `mute()`.
+
+**Notes for later tickets:**
+- 12 (voice output): put TTS/barge-in/echo guard next to `voice/speechProvider.ts`; the echo guard should filter `onInterim`/`onFinal` before `InterviewPage` sends them. Cancelling an in-flight proactive call when `speaking: true` arrives is still to do (`TriggerEngine.speaking()` is there to check). Interviewer utterances are still logged with `channel: "text"`.
+- 13 (reconnect/replay): the speaking state isn't in the log (it is momentary); mute state is (`mic_muted`/`mic_unmuted`), and the client restores it from events. A voice utterance's `start_ms` is approximate (anchored at receipt).
+- Interim speech doesn't count as activity for silence until its final utterance arrives (finals come within ~1.2 s of the last word).
+- Frontend voice behavior is verified manually only (spec); not clicked through in a browser here.

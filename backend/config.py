@@ -35,6 +35,18 @@ class RunnerConfig:
 
 
 @dataclass(frozen=True)
+class VoiceConfig:
+    """`config.yaml` `voice`: what the browser's voice layer needs, stored in each Session's
+    settings."""
+
+    utterance_silence_ms: int = 1200
+    """Interim speech with no new result for this long ends the utterance."""
+
+    def to_settings(self) -> dict[str, Any]:
+        return {"utterance_silence_ms": self.utterance_silence_ms}
+
+
+@dataclass(frozen=True)
 class Config:
     api_key: str
     models: ModelIds
@@ -44,6 +56,7 @@ class Config:
     db_path: Path
     runner: RunnerConfig
     triggers: TriggerConfig
+    voice: VoiceConfig
     raw: dict[str, Any]
     """The full parsed config.yaml, for sections later modules read (runner, voice, ...)."""
 
@@ -83,5 +96,8 @@ def load_config(
             output_cap_kb=int(runner_raw.get("output_cap_kb", 64)),
         ),
         triggers=TriggerConfig.from_settings(interview),
+        voice=VoiceConfig(
+            utterance_silence_ms=int(raw.get("voice", {}).get("utterance_silence_ms", 1200))
+        ),
         raw=raw,
     )

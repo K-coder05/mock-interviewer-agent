@@ -7,6 +7,11 @@ import { Console } from "../components/Console";
 import { Conversation, TranscriptEntry } from "../components/Conversation";
 import { Timer, TimerSnapshot } from "../components/Timer";
 import { Clarification, Phase, PHASE_LABELS, PHASES, RunResult, SessionSocket } from "../ws";
+import { webSpeechSupported, WebSpeechProvider } from "../voice/speechProvider";
+
+// The server counts the Candidate as speaking for 1.5 s after each `speaking` signal, so
+// interim results refresh it at least this often.
+const SPEAKING_REFRESH_MS = 500;
 
 function transcriptFrom(events: SessionEvent[]): TranscriptEntry[] {
   return events
@@ -28,6 +33,12 @@ function phaseFrom(events: SessionEvent[]): Phase {
   return phase;
 }
 
+// A reload keeps the mic as the Session last logged it.
+function mutedFrom(events: SessionEvent[]): boolean {
+  const last = events.filter((e) => e.type === "mic_muted" || e.type === "mic_unmuted").pop();
+  return last?.type === "mic_muted";
+}
+
 function clarificationsFrom(events: SessionEvent[]): Clarification[] {
   return events
     .filter((e) => e.type === "clarification")
@@ -45,6 +56,11 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
   const [timer, setTimer] = useState<TimerSnapshot | null>(null);
   const [ended, setEnded] = useState(false);
   const [phase, setPhase] = useState<Phase>("clarify");
+  const [interim, setInterim] = useState("");
+  const [muted, setMuted] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(
+    webSpeechSupported() ? null : "Voice needs Chrome or Edge; type instead.",
+  );
   const stdinRef = useRef("");
   stdinRef.current = stdin;
   const bufferRef = useRef("");
@@ -59,6 +75,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         setTranscript(transcriptFrom(events));
         setClarifications(clarificationsFrom(events));
         setPhase(phaseFrom(events));
+        setMuted(mutedFrom(events));
         setEnded(session.status !== "live");
         setSession(session);
       })
@@ -142,6 +159,51 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     };
   }, [session]);
 
+  // Always listening while the Session is live and the mic is not muted. Every final utterance
+  // goes on the record; the Interviewer decides whether to respond.
+  useEffect(() => {
+    if (!session || ended || muted || voiceError) return;
+    let lastSpeakingSent = 0;
+    const send = (message: Parameters<SessionSocket["send"]>[0]) => socketRef.current?.send(message);
+    const provider = new WebSpeechProvider(
+      {
+        onInterim: (text) => {
+          setInterim(text);
+          const now = performance.now();
+          if (now - lastSpeakingSent >= SPEAKING_REFRESH_MS) {
+            lastSpeakingSent = now;
+            send({ type: "speaking", active: true });
+          }
+        },
+        onFinal: (text, startMs, endMs) => {
+          setInterim("");
+          lastSpeakingSent = 0;
+          send({ type: "speaking", active: false });
+          syncRef.current?.flush(); // the reply must see the code as it is now
+          send({ type: "utterance", text, channel: "voice", start_ms: startMs, end_ms: endMs });
+          setTranscript((entries) => [
+            ...entries,
+            { key: `voice-${Date.now()}-${entries.length}`, speaker: "user", text },
+          ]);
+        },
+        onError: setVoiceError,
+      },
+      session.settings.voice?.utterance_silence_ms,
+    );
+    provider.start();
+    return () => {
+      provider.stop();
+      setInterim("");
+      send({ type: "speaking", active: false });
+    };
+  }, [session, ended, muted, voiceError]);
+
+  const toggleMute = () => {
+    const next = !muted;
+    setMuted(next);
+    socketRef.current?.send({ type: "ui_event", event: "mute", muted: next });
+  };
+
   // The run message carries the live buffer, which also becomes a forced snapshot server-side;
   // flushing first keeps any pending debounced update from arriving after it.
   const run = (code: string) => {
@@ -193,6 +255,22 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
           ))}
         </nav>
         {error && <span className="error">{error}</span>}
+        {voiceError ? (
+          <span className="hint" title={voiceError}>
+            Mic off
+          </span>
+        ) : (
+          <button
+            type="button"
+            className={`mic-button ${muted ? "muted" : "listening"}`}
+            aria-pressed={muted}
+            disabled={ended}
+            onClick={toggleMute}
+            title={muted ? "Unmute your mic" : "Mute your mic"}
+          >
+            {muted ? "Mic muted" : "Mic on"}
+          </button>
+        )}
         <Timer timer={ended ? { state: "ended", remainingMs: 0, receivedAt: 0 } : timer} />
         {ended ? (
           <a className="report-link" href={`#/sessions/${session.id}/report`}>
@@ -242,7 +320,8 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         />
       </section>
       <section className="pane conversation">
-        <Conversation entries={transcript} onSend={say} disabled={ended} />
+        <Conversation entries={transcript} interim={interim} onSend={say} disabled={ended} />
+        {voiceError && !ended && <p className="hint">{voiceError}</p>}
         {ended && (
           <p className="ended-note">
             The interview has ended. <a href={`#/sessions/${session.id}/report`}>View report</a>

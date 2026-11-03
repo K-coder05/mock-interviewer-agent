@@ -46,6 +46,11 @@ body { margin: 0; }
 .turn .speaker { display: block; font-size: 0.75rem; font-weight: 600; color: #667085; }
 .turn.interviewer .speaker { color: #1f6feb; }
 .turn.streaming { color: #475467; }
+.turn.interim { color: #98a2b3; font-style: italic; }
+.mic-button { padding: 0.4rem 0.8rem; font: inherit; border: 1px solid #d0d5dd; border-radius: 6px; background: white; cursor: pointer; }
+.mic-button.listening { border-color: #12b76a; color: #027a48; }
+.mic-button.muted { border-color: #b42318; color: #b42318; }
+.mic-button:disabled { opacity: 0.5; cursor: default; }
 .composer { display: flex; gap: 0.5rem; padding: 0.6rem; border-top: 1px solid #d0d5dd; }
 .composer textarea { flex: 1; font: inherit; padding: 0.4rem; border: 1px solid #d0d5dd; border-radius: 6px; resize: none; }
 .composer button { padding: 0 1rem; font: inherit; font-weight: 600; border: 0; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; }

@@ -4,7 +4,10 @@ export type ClientMessage =
   | { type: "code_update"; code: string }
   | { type: "run"; code: string; stdin: string }
   | { type: "utterance"; text: string; channel: "text" }
+  | { type: "utterance"; text: string; channel: "voice"; start_ms: number; end_ms: number }
+  | { type: "speaking"; active: boolean }
   | { type: "ui_event"; event: "paste"; text: string }
+  | { type: "ui_event"; event: "mute"; muted: boolean }
   | { type: "set_phase"; phase: Phase }
   | { type: "end_session" };
 

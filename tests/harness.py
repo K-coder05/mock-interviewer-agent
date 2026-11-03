@@ -195,6 +195,29 @@ class LiveSessionHarness:
         assert live is not None
         await live.wait_for_interviewer()
 
+    async def speak(self, session_id: str, text: str, *, duration_s: float = 2.0) -> None:
+        """Say something out loud: the client ends the speaking state, then sends the final
+        utterance (timed in the browser's clock, which differs from the Session's); waits for
+        any reply."""
+        start = 5_000_000.0  # an arbitrary client clock reading
+        await self.send(session_id, "speaking", active=False)
+        await self.send(
+            session_id,
+            "utterance",
+            text=text,
+            channel="voice",
+            start_ms=start,
+            end_ms=start + duration_s * 1000,
+        )
+        await self.wait_for_interviewer(session_id)
+
+    async def speaking(self, session_id: str, active: bool = True) -> None:
+        """The client's `speaking` signal (sent from interim speech results)."""
+        await self.send(session_id, "speaking", active=active)
+
+    async def mute(self, session_id: str, muted: bool = True) -> None:
+        await self.send(session_id, "ui_event", event="mute", muted=muted)
+
     async def finish_run(self, session_id: str) -> None:
         """Wait for the Session's in-flight Run to complete (Runs execute in the background)."""
         live = self.manager.live(session_id)

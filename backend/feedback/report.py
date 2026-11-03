@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.agent.model import ModelClient, ModelError, ModelRequest, ToolCall, Usage
 from backend.db import Event, SessionRecord
-from backend.feedback.metrics import compute_metrics
+from backend.feedback.metrics import LONG_MUTE_MS, compute_metrics
 from backend.feedback.prompt import REPORT_SYSTEM_PROMPT
 from backend.feedback.rubric import DIMENSION_KEYS, DIMENSIONS, overall_signal
 from backend.feedback.tests import ExecutedTest, extract_executed_tests
@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 REPORT_MAX_TOKENS = 32_000
 ATTEMPTS = 2  # one retry
 CORRECTNESS_NOTE = "Assessed by reading the code, not by executing it."
+
+
+def muted_note(muted_ms: int) -> str | None:
+    """The Communication note for a Candidate muted over LONG_MUTE_MS in total, else None."""
+    if muted_ms <= LONG_MUTE_MS:
+        return None
+    seconds = muted_ms // 1000
+    return (
+        f"Your mic was muted for {seconds // 60}:{seconds % 60:02d} in total, so your think-aloud "
+        "during that time wasn't captured; Communication is judged on less evidence."
+    )
 TYPICAL = "Typical case"
 OTHER = "Other"
 
@@ -373,6 +384,10 @@ def _timeline_entry(event: Event, full_snapshots: set[int]) -> str:
         return f"{stamp} Interviewer private note: {p.get('observation', '')}"
     if event.type == "paste":
         return f"{stamp} Pasted {p.get('length')} characters (noted only, never penalized):\n{_clip(str(p.get('text', '')), 500)}"
+    if event.type == "mic_muted":
+        return f"{stamp} Candidate muted their microphone (speech from here on is not captured)"
+    if event.type == "mic_unmuted":
+        return f"{stamp} Candidate unmuted their microphone"
     if event.type == "session_ended":
         return f"{stamp} Session ended ({p.get('reason')})"
     return f"{stamp} {event.type}: {json.dumps(p, sort_keys=True)}"
@@ -505,8 +520,13 @@ def _assemble(
     events: Sequence[Event],
     record: SessionRecord,
     tests: Sequence[ExecutedTest],
+    metrics: dict[str, Any],
 ) -> dict[str, Any]:
     scores = submission.scores()
+    notes = {
+        "correctness": CORRECTNESS_NOTE,
+        "communication": muted_note(int(metrics.get("muted_ms") or 0)),
+    }
     signal = overall_signal({key: s.score for key, s in scores.items()})
     correctness = correctness_snapshot(events)
     return {
@@ -524,7 +544,7 @@ def _assemble(
                 "weight": d.weight,
                 "score": scores[d.key].score,
                 "evidence": [e.model_dump() for e in scores[d.key].evidence],
-                "note": CORRECTNESS_NOTE if d.key == "correctness" else None,
+                "note": notes.get(d.key),
             }
             for d in DIMENSIONS
         ],
@@ -609,7 +629,7 @@ async def generate_report(
             if submission is not None:
                 return GeneratedReport(
                     model=served_by,
-                    report=_assemble(submission, events, record, tests),
+                    report=_assemble(submission, events, record, tests, metrics),
                     metrics=metrics,
                     usage={**usage, "attempts": attempt},
                 )
