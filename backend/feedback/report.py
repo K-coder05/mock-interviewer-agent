@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -22,6 +22,7 @@ from backend.db import Event, SessionRecord
 from backend.feedback.metrics import compute_metrics
 from backend.feedback.prompt import REPORT_SYSTEM_PROMPT
 from backend.feedback.rubric import DIMENSION_KEYS, DIMENSIONS, overall_signal
+from backend.feedback.tests import ExecutedTest, extract_executed_tests
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ REPORT_MAX_TOKENS = 32_000
 ATTEMPTS = 2  # one retry
 CORRECTNESS_NOTE = "Assessed by reading the code, not by executing it."
 WRAP_UP = "wrap_up"  # the Phase whose start freezes the code judged for Correctness
+TYPICAL = "Typical case"
+OTHER = "Other"
 
 
 class ReportFailed(Exception):
@@ -71,6 +74,29 @@ _DIMENSION_SCORE = _object(
     }
 )
 
+_EXECUTED_CATEGORY = _object(
+    {
+        "id": {"type": "string", "description": "An id from <candidate_tests>, e.g. x1."},
+        "category": {"type": "string"},
+    }
+)
+
+_TRACED_TEST = _object(
+    {
+        "t_ms": {
+            "type": "integer",
+            "description": "Copied exactly from the Candidate utterance where the walk-through began.",
+        },
+        "input": {"type": "string", "description": "The concrete input, as the Candidate said it."},
+        "expected_result": {
+            "type": "string",
+            "description": "The expected result the Candidate stated, or an empty string.",
+        },
+        "expected_stated": {"type": "boolean"},
+        "category": {"type": "string"},
+    }
+)
+
 SUBMIT_REPORT_TOOL: dict[str, Any] = {
     "name": "submit_report",
     "description": "Submit the feedback report for this interview. Call exactly once.",
@@ -80,6 +106,16 @@ SUBMIT_REPORT_TOOL: dict[str, Any] = {
             "summary": {"type": "string"},
             "signal_rationale": {"type": "string"},
             "rubric": _object({d.key: _DIMENSION_SCORE for d in DIMENSIONS}),
+            "executed_test_categories": {
+                "type": "array",
+                "items": _EXECUTED_CATEGORY,
+                "description": "One entry per test id in <candidate_tests>.",
+            },
+            "traced_tests": {
+                "type": "array",
+                "items": _TRACED_TEST,
+                "description": "Tests the Candidate walked through by hand without running them.",
+            },
         }
     ),
 }
@@ -117,16 +153,44 @@ class _Rubric(_Model):
 assert tuple(_Rubric.model_fields) == DIMENSION_KEYS, "the validator must match the rubric"
 
 
+class _ExecutedCategory(_Model):
+    id: str
+    category: str
+
+
+class _TracedTest(_Model):
+    t_ms: int
+    input: str = Field(min_length=1)
+    expected_result: str
+    expected_stated: bool
+    category: str
+
+
 class Submission(_Model):
     summary: str = Field(min_length=1)
     signal_rationale: str = Field(min_length=1)
     rubric: _Rubric
+    executed_test_categories: list[_ExecutedCategory]
+    traced_tests: list[_TracedTest]
 
     def scores(self) -> dict[str, _Score]:
         return {key: getattr(self.rubric, key) for key in DIMENSION_KEYS}
 
 
-def validate_submission(value: Any, log_t_ms: set[int]) -> tuple[Submission | None, list[str]]:
+def test_categories(record: SessionRecord) -> list[str]:
+    """The categories a test can be filed under: the brief's Edge-Case Categories, then two
+    catch-alls."""
+    brief = record.problem_brief or {}
+    return [c["name"] for c in brief.get("edge_case_categories", [])] + [TYPICAL, OTHER]
+
+
+def validate_submission(
+    value: Any,
+    log_t_ms: set[int],
+    *,
+    test_ids: Collection[str] = (),
+    categories: Sequence[str] = (TYPICAL, OTHER),
+) -> tuple[Submission | None, list[str]]:
     """The submission if valid, else the problems found (fed back to the model on retry)."""
     try:
         submission = Submission.model_validate(value)
@@ -142,6 +206,21 @@ def validate_submission(value: Any, log_t_ms: set[int]) -> tuple[Submission | No
         for e in score.evidence
         if e.t_ms not in log_t_ms
     ]
+    allowed = ", ".join(f'"{c}"' for c in categories)
+    for tagged in submission.executed_test_categories:
+        if tagged.id not in test_ids:
+            problems.append(f"executed_test_categories: {tagged.id!r} is not a test id")
+        if tagged.category not in categories:
+            problems.append(
+                f"executed_test_categories: category {tagged.category!r} must be one of {allowed}"
+            )
+    for traced in submission.traced_tests:
+        if traced.t_ms not in log_t_ms:
+            problems.append(
+                f"traced_tests: t_ms {traced.t_ms} is not the timestamp of any timeline entry"
+            )
+        if traced.category not in categories:
+            problems.append(f"traced_tests: category {traced.category!r} must be one of {allowed}")
     return (None, problems) if problems else (submission, [])
 
 
@@ -217,8 +296,20 @@ def _timeline_entry(event: Event, full_snapshots: set[int]) -> str:
     return f"{stamp} {event.type}: {json.dumps(p, sort_keys=True)}"
 
 
+def _describe_test(test: ExecutedTest) -> str:
+    source = test.source if "\n" not in test.source else "\n" + test.source
+    return (
+        f"- {test.id} [{_stamp(test.t_ms)}] {test.form}, "
+        f"{'expectation stated' if test.verified else 'no expectation stated'}, "
+        f"{'stopped the run' if test.outcome == 'failed' else 'ran'}: {source}"
+    )
+
+
 def build_report_message(
-    record: SessionRecord, events: Sequence[Event], metrics: dict[str, Any]
+    record: SessionRecord,
+    events: Sequence[Event],
+    metrics: dict[str, Any],
+    tests: Sequence[ExecutedTest] = (),
 ) -> str:
     """The single user message for the Report call, derived only from the stored Session."""
     correctness = correctness_snapshot(events)
@@ -247,6 +338,11 @@ def build_report_message(
             f"<settings>\nduration: {settings.get('duration_min')} min\n"
             f"editor autocomplete: {'on' if settings.get('autocomplete') else 'off'}\n</settings>",
             "<clarifications>\n" + ("\n".join(clarifications) or "(none)") + "\n</clarifications>",
+            "<candidate_tests>\nExecuted tests found in the code the candidate ran (extracted in code):\n"
+            + ("\n".join(_describe_test(t) for t in tests) or "(none)")
+            + "\nFile each under one of these categories: "
+            + ", ".join(f'"{c}"' for c in test_categories(record))
+            + "\n</candidate_tests>",
             "<timeline>\n" + "\n\n".join(timeline) + "\n</timeline>",
             f"<code_for_correctness>\n{correctness_code}\n</code_for_correctness>",
             "<metrics>\n" + json.dumps(metrics, indent=2, sort_keys=True) + "\n</metrics>",
@@ -266,7 +362,68 @@ class GeneratedReport:
     """Token usage summed over every attempt (failed ones cost tokens too)."""
 
 
-def _assemble(submission: Submission, events: Sequence[Event]) -> dict[str, Any]:
+def _testing(
+    submission: Submission, record: SessionRecord, tests: Sequence[ExecutedTest]
+) -> dict[str, Any]:
+    """The testing breakdown: tests grouped by category, executed ones that ran without a stated
+    expectation listed apart, and the brief's Edge-Case Categories no test covered."""
+    tagged = {c.id: c.category for c in submission.executed_test_categories}
+    entries: list[dict[str, Any]] = [
+        {
+            "id": t.id,
+            "kind": "executed",
+            "form": t.form,
+            "input": t.source,
+            "verified": t.verified,
+            "outcome": t.outcome,
+            "expected_result": None,
+            "category": tagged.get(t.id, OTHER),
+            "t_ms": t.t_ms,
+            "runs": t.runs,
+        }
+        for t in tests
+    ] + [
+        {
+            "id": f"t{i}",
+            "kind": "traced",
+            "form": "traced",
+            "input": t.input,
+            "verified": t.expected_stated,
+            "outcome": None,
+            "expected_result": t.expected_result if t.expected_stated and t.expected_result else None,
+            "category": t.category,
+            "t_ms": t.t_ms,
+            "runs": 0,
+        }
+        for i, t in enumerate(submission.traced_tests, 1)
+    ]
+    unverified = [e for e in entries if e["kind"] == "executed" and not e["verified"]]
+    covered = {e["category"] for e in entries}
+    brief = record.problem_brief or {}
+    return {
+        "groups": [
+            {"category": c, "tests": [e for e in entries if e["category"] == c and e not in unverified]}
+            for c in test_categories(record)
+            if any(e["category"] == c and e not in unverified for e in entries)
+        ],
+        "ran_but_not_verified": unverified,
+        "missed_categories": [
+            c for c in brief.get("edge_case_categories", []) if c["name"] not in covered
+        ],
+        "totals": {
+            "executed": sum(e["kind"] == "executed" for e in entries),
+            "traced": sum(e["kind"] == "traced" for e in entries),
+            "verified": sum(bool(e["verified"]) for e in entries),
+        },
+    }
+
+
+def _assemble(
+    submission: Submission,
+    events: Sequence[Event],
+    record: SessionRecord,
+    tests: Sequence[ExecutedTest],
+) -> dict[str, Any]:
     scores = submission.scores()
     signal = overall_signal({key: s.score for key, s in scores.items()})
     correctness = correctness_snapshot(events)
@@ -295,6 +452,7 @@ def _assemble(submission: Submission, events: Sequence[Event]) -> dict[str, Any]
             "snapshot_seq": None if correctness is None else correctness.seq,
             "t_ms": None if correctness is None else correctness.t_ms,
         },
+        "testing": _testing(submission, record, tests),
     }
 
 
@@ -313,7 +471,9 @@ async def generate_report(
 ) -> GeneratedReport:
     """Evaluate one stored Session. Raises ReportFailed after the retry."""
     metrics = compute_metrics(events)
-    message = build_report_message(record, events, metrics)
+    tests = extract_executed_tests(events)
+    categories = test_categories(record)
+    message = build_report_message(record, events, metrics, tests)
     log_t_ms = {e.t_ms for e in events}
     usage: dict[str, int] = {}
     problems: list[str] = []
@@ -354,11 +514,16 @@ async def generate_report(
         if not submitted:
             problems = ["no submit_report call was made"]
         else:
-            submission, problems = validate_submission(submitted[-1].input, log_t_ms)
+            submission, problems = validate_submission(
+                submitted[-1].input,
+                log_t_ms,
+                test_ids={t.id for t in tests},
+                categories=categories,
+            )
             if submission is not None:
                 return GeneratedReport(
                     model=served_by,
-                    report=_assemble(submission, events),
+                    report=_assemble(submission, events, record, tests),
                     metrics=metrics,
                     usage={**usage, "attempts": attempt},
                 )

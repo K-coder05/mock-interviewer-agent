@@ -82,6 +82,26 @@ export interface RubricRow {
   note: string | null;
 }
 
+export interface CandidateTest {
+  id: string;
+  kind: "executed" | "traced";
+  form: "assert" | "call" | "printed_call" | "stdin" | "traced";
+  input: string;
+  verified: boolean;
+  outcome: "ok" | "failed" | "unknown" | null;
+  expected_result: string | null;
+  category: string;
+  t_ms: number;
+  runs: number;
+}
+
+export interface TestingBreakdown {
+  groups: { category: string; tests: CandidateTest[] }[];
+  ran_but_not_verified: CandidateTest[];
+  missed_categories: { name: string; description: string }[];
+  totals: { executed: number; traced: number; verified: number };
+}
+
 export interface Report {
   summary: string;
   overall_signal: {
@@ -91,6 +111,7 @@ export interface Report {
     rationale: string;
   };
   rubric: RubricRow[];
+  testing: TestingBreakdown;
   correctness: { executed: false; note: string; snapshot_seq: number | null; t_ms: number | null };
 }
 

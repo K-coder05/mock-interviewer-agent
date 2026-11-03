@@ -23,17 +23,31 @@ from backend.feedback.rubric import DIMENSION_KEYS
 from tests.harness import DEFAULT_BRIEF, DEFAULT_MODELS, ScriptedModel
 
 
+def traced(t: float, input: str, *, expected: str = "", category: str = "Typical case") -> dict[str, Any]:
+    """A `traced_tests` item at `t` seconds; `expected` empty means no expectation was stated."""
+    return {
+        "t_ms": round(t * 1000),
+        "input": input,
+        "expected_result": expected,
+        "expected_stated": bool(expected),
+        "category": category,
+    }
+
+
 def submit_report(
     scores: Mapping[str, int] | None = None,
     *,
     evidence_t_ms: int = 0,
     summary: str = "You clarified well but tested late.",
     rationale: str = "Solid approach; testing was thin.",
+    executed: Mapping[str, str] | None = None,
+    traced: list[dict[str, Any]] | None = None,
     **overrides: Any,
 ) -> ToolCall:
     """A valid `submit_report` call. Every dimension scores 3 (or `scores[key]`) with one evidence
     item at `evidence_t_ms` (t=0 always exists: `session_started`). `overrides` replace top-level
-    fields of the tool input verbatim."""
+    fields of the tool input verbatim. `executed` maps test ids ("x1"...) to categories; `traced`
+    is the `traced_tests` list."""
     rubric = {
         key: {
             "score": (scores or {}).get(key, 3),
@@ -47,6 +61,8 @@ def submit_report(
         "summary": summary,
         "signal_rationale": rationale,
         "rubric": rubric,
+        "executed_test_categories": [{"id": i, "category": c} for i, c in (executed or {}).items()],
+        "traced_tests": traced or [],
         **overrides,
     }
     return ToolCall("submit_report", payload)
@@ -177,4 +193,4 @@ class ReportHarness:
         return record.status
 
 
-__all__ = ["EventLog", "ReportHarness", "submit_report"]
+__all__ = ["EventLog", "ReportHarness", "submit_report", "traced"]
