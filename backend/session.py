@@ -777,6 +777,12 @@ class SessionManager:
             timer_poll_s=self._timer_poll_s,
         )
 
+    async def forget(self, session_id: str) -> None:
+        """Drop a deleted Session's LiveSession (an ended one stays cached otherwise)."""
+        live = self._live.pop(session_id, None)
+        if live is not None:
+            await live.close()
+
     async def close(self) -> None:
         for live in self._live.values():
             await live.close()

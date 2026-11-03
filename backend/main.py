@@ -127,7 +127,9 @@ def create_app(
         )
 
     @app.delete("/api/sessions/{session_id}")
-    def remove_session(session_id: str) -> dict[str, str]:
+    async def remove_session(session_id: str) -> dict[str, str]:
+        # async: the busy check and the delete run on the event loop, so no report can start between
+
         outcome = delete_session(store, session_id, generating=reports.generating(session_id))
         if outcome == "not_found":
             raise HTTPException(status_code=404, detail="Session not found")
@@ -135,6 +137,7 @@ def create_app(
             raise HTTPException(
                 status_code=409, detail="The interview or its report is still in progress"
             )
+        await manager.forget(session_id)
         return {"status": "deleted"}
 
     @app.get("/api/sessions/{session_id}")
