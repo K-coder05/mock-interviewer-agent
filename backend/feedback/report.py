@@ -366,6 +366,11 @@ def _timeline_entry(event: Event, full_snapshots: set[int]) -> str:
         )
     if event.type == "clarification":
         return f"{stamp} Clarification (by {p.get('by')}): Q: {p.get('question')} A: {p.get('answer')}"
+    if event.type == "hint_given":
+        asked = " (the candidate asked for it)" if p.get("requested") else ""
+        return f"{stamp} Hint L{p.get('level')}{asked}: {p.get('text', '')}"
+    if event.type == "interviewer_note":
+        return f"{stamp} Interviewer private note: {p.get('observation', '')}"
     if event.type == "paste":
         return f"{stamp} Pasted {p.get('length')} characters (noted only, never penalized):\n{_clip(str(p.get('text', '')), 500)}"
     if event.type == "session_ended":

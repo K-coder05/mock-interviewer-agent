@@ -355,6 +355,8 @@ class LiveSession:
             return
         self._append_utterance("user", text.strip(), self._now_ms())
         self._request_reply(Trigger("typed_message"))  # a typed message always gets a reply
+        for trigger in self._triggers.merge_waiting():  # e.g. a Run's reaction: one reply
+            self._request_reply(trigger)
 
     def _request_reply(self, trigger: Trigger) -> None:
         """Start a decision call, or, if one is in flight, queue the Trigger: everything queued
@@ -448,6 +450,10 @@ class LiveSession:
             )
         elif streamed:  # whitespace only: nothing to keep
             await self._emit({"type": "interviewer_cancel", "msg_id": msg_id})
+        if decision.hint is not None:  # spoken as part of the utterance above
+            self._append("hint_given", dataclasses.asdict(decision.hint))
+        for observation in decision.notes:  # private: never sent to the client
+            self._append("interviewer_note", {"observation": observation})
         for clarification in decision.clarifications:
             payload = dataclasses.asdict(clarification)
             event = self._append("clarification", payload)

@@ -9,6 +9,9 @@ interview:
   max_proactive_per_5min: 3
   silence_nudge_s: {clarify: 45, approach: 45, implement: 90, test: 60}
   run_reaction_delay_s: 3
+  stuck_failing_runs: 3       # failing Runs in a row that count as stuck (so does the same exception twice)
+  coding_pause_lines: 25      # lines changed since the last walkthrough request...
+  coding_pause_idle_s: 30     # ...then this long without an edit or Run
   muted_silence_multiplier: 2
   user_phase_lock_s: 120
   timeout_grace_s: 60

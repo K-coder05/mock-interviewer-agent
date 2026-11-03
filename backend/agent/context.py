@@ -97,6 +97,26 @@ def _clip(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[:limit] + f"\n[... {len(text) - limit} more chars]"
 
 
+MAX_HINT_LEVEL = 4
+
+
+def _hint_level(event: Event) -> int | None:
+    value = event.payload.get("level")
+    if not isinstance(value, (int, str)) or not str(value).isdigit():
+        return None
+    level = int(value)
+    return level if 1 <= level <= MAX_HINT_LEVEL else None
+
+
+def next_hint_level(events: Sequence[Event]) -> int:
+    """One level above the last Hint given (L1 if none yet), never above L4."""
+    last = next(
+        (level for e in reversed(events) if e.type == "hint_given" and (level := _hint_level(e))),
+        0,
+    )
+    return min(last + 1, MAX_HINT_LEVEL)
+
+
 def build_turn_message(
     events: Sequence[Event],
     *,
@@ -110,7 +130,10 @@ def build_turn_message(
     clarifications: list[str] = []
     transcript: list[str] = []
     code = ""
+    last_diff = ""
     runs: list[Event] = []
+    hints: list[str] = []
+    notes: list[str] = []
     for event in events:
         p = event.payload
         if event.type == "utterance":
@@ -121,8 +144,13 @@ def build_turn_message(
             clarifications.append(f"- Q: {p['question']} A: {p['answer']} (by {p['by']})")
         elif event.type == "code_snapshot":
             code = p["code"]
+            last_diff = str(p.get("diff_from_prev", ""))
         elif event.type == "run":
             runs.append(event)
+        elif event.type == "hint_given":
+            hints.append(f"- [{_clock(event.t_ms)}] L{p.get('level')}: {p.get('text')}")
+        elif event.type == "interviewer_note":
+            notes.append(f"- [{_clock(event.t_ms)}] {p.get('observation')}")
 
     phase = current(events)
     phase_lines = [f"{phase.phase} (for {_clock(max(0, now_ms - phase.since_ms))})"]
@@ -152,8 +180,13 @@ def build_turn_message(
             *([] if remaining_ms is None else [f"<time_left>{_clock(max(0, remaining_ms))}</time_left>"]),
             "<phase>\n" + "\n".join(phase_lines) + "\n</phase>",
             "<clarifications>\n" + ("\n".join(clarifications) or "(none yet)") + "\n</clarifications>",
+            "<hints_given>\n"
+            + "\n".join([*hints, f"The next Hint is L{next_hint_level(events)}."])
+            + "\n</hints_given>",
+            "<your_notes>\n" + ("\n".join(notes) or "(none yet)") + "\n</your_notes>",
             "<transcript>\n" + ("\n".join(transcript) or "(nothing said yet)") + "\n</transcript>",
             "<current_code>\n" + (numbered or "(empty)") + "\n</current_code>",
+            "<last_diff>\n" + (_clip(last_diff) or "(no edits yet)") + "\n</last_diff>",
             "<recent_runs>\n" + ("\n\n".join(run_lines) or "(no runs yet)") + "\n</recent_runs>",
             "<trigger>"
             + "\n".join(

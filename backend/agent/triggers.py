@@ -3,9 +3,12 @@
 The engine observes every event the Session appends (the per-Session event queue, consumed in
 order as events are written) and keeps only what it needs to decide:
 
-- `due(now_ms)`: the time-based Triggers that fire now (silence, time checkpoints, Phase overrun).
-  Each fires once per occasion: one silence Trigger per silence, each checkpoint once, one overrun
-  per stay in a Phase.
+- `due(now_ms)`: the Triggers that fire now: a finished Run (after its delay; `stuck` instead
+  when that Run makes the Candidate look stuck), time checkpoints, Phase overrun, a coding pause
+  and silence. Each fires once per occasion: one reaction per Run, one silence Trigger per
+  silence, each checkpoint once, one overrun per stay in a Phase, one coding pause per chunk.
+- `merge_waiting()`: a Run reaction still waiting, taken to ride along with a reply to the
+  Candidate instead of firing on its own.
 - `suppression(now_ms)`: whether the guardrails hold back an unprompted (proactive) utterance
   right now: the cooldown after the Interviewer last spoke, and the cap on Nudges per 5 minutes.
 
@@ -16,6 +19,9 @@ guardrails when the call is about to start and logs a `trigger` event with the o
 """
 
 from __future__ import annotations
+
+import difflib
+import re
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -31,7 +37,10 @@ TriggerReason = Literal[
     "typed_message",
     "typed_message_unanswered",
     "time",
+    "stuck",
+    "run",
     "phase_overrun",
+    "coding_pause",
     "silence",
 ]
 TimeCheckpoint = Literal["half_time_no_code", "10_min_left", "5_min_left"]
@@ -58,7 +67,12 @@ REASONS: dict[TriggerReason, _Reason] = {
         True, "your previous turn only called tools; reply to the candidate now"
     ),
     "time": _Reason(False, "a time checkpoint"),
+    "stuck": _Reason(False, "the candidate looks stuck"),
+    "run": _Reason(False, "the candidate's Run finished"),
     "phase_overrun": _Reason(False, "the current Phase has run over its time guide"),
+    "coding_pause": _Reason(
+        False, "the candidate wrote a large chunk of code and has paused"
+    ),
     "silence": _Reason(
         False, "the candidate has neither spoken nor touched the code for a while"
     ),
@@ -69,12 +83,21 @@ CHECKPOINTS: dict[TimeCheckpoint, str] = {
     "10_min_left": "10 minutes are left",
     "5_min_left": "5 minutes are left",
 }
+# Descriptions of the other fixed details (a silence's or overrun's detail is a Phase).
+DETAILS: dict[str, str] = {
+    **{str(name): text for name, text in CHECKPOINTS.items()},
+    "passed": "the candidate's Run finished without an error",
+    "failed": "the candidate's Run failed (an error, a non-zero exit or a timeout)",
+    "failing_runs": "the candidate's last Runs have all failed",
+    "repeated_exception": "the same exception came up again in the candidate's failing Runs",
+}
 CAP_WINDOW_MS = 5 * 60_000
 # Time-left checkpoints, latest first: when several are crossed at once only the latest fires.
 TIME_LEFT: tuple[tuple[TimeCheckpoint, int], ...] = (
     ("5_min_left", 5 * 60_000),
     ("10_min_left", 10 * 60_000),
 )
+_EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(:|$)")
 DEFAULT_SILENCE_S: dict[str, float] = {"clarify": 45, "approach": 45, "implement": 90, "test": 60}
 
 
@@ -94,7 +117,7 @@ class Trigger:
     def describe(self) -> str:
         if self.detail is None:
             return f"{self.reason}: {REASONS[self.reason].description}"
-        description = CHECKPOINTS.get(self.detail, REASONS[self.reason].description)  # type: ignore[call-overload]
+        description = DETAILS.get(self.detail, REASONS[self.reason].description)
         return f"{self.reason} ({self.detail}): {description}"
 
     def to_payload(self) -> dict[str, Any]:
@@ -118,12 +141,21 @@ class TriggerConfig:
     proactive_cooldown_s: float = 45
     max_proactive_per_5min: int = 3
     silence_nudge_s: Mapping[str, float] = field(default_factory=lambda: dict(DEFAULT_SILENCE_S))
+    run_reaction_delay_s: float = 3
+    stuck_failing_runs: int = 3
+    """Failing Runs in a row that count as stuck (so does the same exception twice)."""
+    coding_pause_lines: int = 25
+    coding_pause_idle_s: float = 30
 
     def to_settings(self) -> dict[str, Any]:
         return {
             "proactive_cooldown_s": self.proactive_cooldown_s,
             "max_proactive_per_5min": self.max_proactive_per_5min,
             "silence_nudge_s": dict(self.silence_nudge_s),
+            "run_reaction_delay_s": self.run_reaction_delay_s,
+            "stuck_failing_runs": self.stuck_failing_runs,
+            "coding_pause_lines": self.coding_pause_lines,
+            "coding_pause_idle_s": self.coding_pause_idle_s,
         }
 
     @classmethod
@@ -139,6 +171,14 @@ class TriggerConfig:
                 value.get("max_proactive_per_5min", default.max_proactive_per_5min)
             ),
             silence_nudge_s={str(k): float(v) for k, v in dict(silence).items() if k in PHASES},
+            run_reaction_delay_s=float(
+                value.get("run_reaction_delay_s", default.run_reaction_delay_s)
+            ),
+            stuck_failing_runs=int(value.get("stuck_failing_runs", default.stuck_failing_runs)),
+            coding_pause_lines=int(value.get("coding_pause_lines", default.coding_pause_lines)),
+            coding_pause_idle_s=float(
+                value.get("coding_pause_idle_s", default.coding_pause_idle_s)
+            ),
         )
 
 
@@ -149,6 +189,23 @@ def _is_candidate_activity(event: Event) -> bool:
     if event.type == "utterance":
         return event.payload.get("speaker") == "user"
     return event.type == "phase_changed" and event.payload.get("by") == "user"
+
+
+def _exception(stderr: str) -> str | None:
+    """The exception a failed Run ended with: its traceback's last line ("IndexError: list
+    index out of range"), or None if stderr doesn't end in one."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if "Traceback (most recent call last):" not in stderr or not _EXCEPTION_LINE.match(lines[-1]):
+        return None
+    return lines[-1]
+
+
+def _lines_changed(old: str, new: str) -> int:
+    """Lines added, removed or modified between two versions (a modified line counts once)."""
+    matcher = difflib.SequenceMatcher(None, old.splitlines(), new.splitlines(), autojunk=False)
+    return sum(
+        max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal"
+    )
 
 
 class TriggerEngine:
@@ -168,6 +225,12 @@ class TriggerEngine:
         self._checkpoints: set[TimeCheckpoint] = set()
         self._nudges_ms: list[int] = []
         self._held_back: list[Trigger] = []  # time/overrun Triggers waiting for the guardrails
+        self._run_reaction: tuple[int, Trigger] | None = None  # (due at, Trigger) for the last Run
+        self._failing_streak: list[str | None] = []  # exception of each failing Run since a pass
+        self._code = ""
+        self._pause_base = ""  # the code as of the last coding pause (or the start)
+        self._last_code_ms = 0  # the last edit or Run
+        self._pause_checked_ms: int | None = None  # the edit whose pause was already measured
 
     def observe(self, event: Event) -> None:
         p = event.payload
@@ -179,7 +242,10 @@ class TriggerEngine:
         elif event.type in ("time_up", "session_ended"):
             self._stopped = True
         elif event.type == "code_snapshot":
-            code = str(p.get("code", "")).strip()
+            self._code = str(p.get("code", ""))
+            if event.t_ms == 0:  # the starter code is where the first chunk starts from
+                self._pause_base = self._code
+            code = self._code.strip()
             self._has_code = self._has_code or (bool(code) and code != self._starter)
         elif event.type == "phase_changed" and p.get("to") in PHASES:
             self._phase, self._phase_since_ms = str(p["to"]), event.t_ms
@@ -187,9 +253,13 @@ class TriggerEngine:
             self._last_interviewer_ms = event.t_ms
         elif event.type == "trigger" and p.get("outcome") == "spoke" and p.get("proactive"):
             self._nudges_ms.append(event.t_ms)
+        elif event.type == "run":
+            self._observe_run(event)
         if _is_candidate_activity(event):
             self._last_activity_ms = max(self._last_activity_ms, event.t_ms)
             self._silence_open = True
+            if event.type in ("code_snapshot", "run"):
+                self._last_code_ms = max(self._last_code_ms, event.t_ms)
 
     def due(self, now_ms: int) -> list[Trigger]:
         """The proactive Triggers that fire at `now_ms`; each is marked fired. Nothing fires
@@ -198,7 +268,9 @@ class TriggerEngine:
             return []
         fresh = [
             *self._time_checkpoints(now_ms),
+            *self._run_finished(now_ms),
             *self._phase_overrun(now_ms),
+            *self._coding_pause(now_ms),
             *self._silence(now_ms),
         ]
         # A newer checkpoint supersedes a held-back one; an overrun is moot once the Phase moved.
@@ -212,10 +284,21 @@ class TriggerEngine:
             retried, self._held_back = self._held_back, []
         return [*retried, *fresh]
 
+    def merge_waiting(self) -> list[Trigger]:
+        """The reaction to the last Run, still waiting for its delay or held back by the
+        guardrails, taken now to ride along with a reply to the Candidate (speech during the
+        delay merges with the Run)."""
+        waiting = [t for t in self._held_back if t.reason == "stuck"]
+        self._held_back = [t for t in self._held_back if t.reason != "stuck"]
+        if self._run_reaction is not None:
+            waiting.append(self._run_reaction[1])
+            self._run_reaction = None
+        return waiting
+
     def hold_back(self, trigger: Trigger) -> None:
         """A guardrail suppressed `trigger`. Time checkpoints and Phase overruns are retried once
         the guardrails allow; a silence is not (one Nudge per silence)."""
-        if trigger.reason in ("time", "phase_overrun") and trigger not in self._held_back:
+        if trigger.reason in ("time", "phase_overrun", "stuck") and trigger not in self._held_back:
             self._held_back.append(trigger)
 
     def suppression(self, now_ms: int) -> Suppression | None:
@@ -255,6 +338,35 @@ class TriggerEngine:
             fired.append(Trigger("time", crossed[0]))
         return fired
 
+    def _observe_run(self, event: Event) -> None:
+        """Each Run gets one reaction: `stuck` when this Run makes the Candidate look stuck,
+        else `run`. A held-back stuck Trigger is moot once a newer Run arrives."""
+        self._held_back = [t for t in self._held_back if t.reason != "stuck"]
+        p = event.payload
+        if p.get("exit_code") == 0 and not p.get("timed_out"):
+            self._failing_streak = []
+            trigger = Trigger("run", "passed")
+        else:
+            exception = "TimeoutError" if p.get("timed_out") else _exception(str(p.get("stderr", "")))
+            repeated = exception is not None and exception in self._failing_streak
+            self._failing_streak.append(exception)
+            if len(self._failing_streak) >= self._config.stuck_failing_runs:
+                trigger = Trigger("stuck", "failing_runs")
+            elif repeated:
+                trigger = Trigger("stuck", "repeated_exception")
+            else:
+                trigger = Trigger("run", "failed")
+        if self._timer_started_ms is None or self._stopped:
+            return
+        due_ms = event.t_ms + round(self._config.run_reaction_delay_s * 1000)
+        self._run_reaction = (due_ms, trigger)  # a newer Run replaces a waiting reaction
+
+    def _run_finished(self, now_ms: int) -> Sequence[Trigger]:
+        if self._run_reaction is None or now_ms < self._run_reaction[0]:
+            return []
+        trigger, self._run_reaction = self._run_reaction[1], None
+        return [trigger]
+
     def _phase_overrun(self, now_ms: int) -> Sequence[Trigger]:
         guide_min = OVERRUN_MIN.get(self._phase)
         if guide_min is None or self._overrun_fired_since == self._phase_since_ms:
@@ -263,6 +375,19 @@ class TriggerEngine:
             return []
         self._overrun_fired_since = self._phase_since_ms
         return [Trigger("phase_overrun", self._phase)]
+
+    def _coding_pause(self, now_ms: int) -> Sequence[Trigger]:
+        """Enough lines changed since the last coding pause, then no edit or Run for a while.
+        Measured once per pause; a suppressed one is dropped (its chunk is not asked about)."""
+        if self._pause_checked_ms == self._last_code_ms:
+            return []
+        if now_ms - self._last_code_ms < self._config.coding_pause_idle_s * 1000:
+            return []
+        self._pause_checked_ms = self._last_code_ms
+        if _lines_changed(self._pause_base, self._code) < self._config.coding_pause_lines:
+            return []
+        self._pause_base = self._code
+        return [Trigger("coding_pause")]
 
     def _silence(self, now_ms: int) -> Sequence[Trigger]:
         threshold_s = self._config.silence_nudge_s.get(self._phase)

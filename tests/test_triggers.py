@@ -365,6 +365,10 @@ async def test_guardrails_and_thresholds_come_from_config_and_are_kept_per_sessi
         "proactive_cooldown_s": 45,
         "max_proactive_per_5min": 3,
         "silence_nudge_s": {"clarify": 45, "approach": 45, "implement": 90, "test": 60},
+        "run_reaction_delay_s": 3,
+        "stuck_failing_runs": 3,
+        "coding_pause_lines": 25,
+        "coding_pause_idle_s": 30,
     }
 
 

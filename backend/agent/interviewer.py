@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from backend.agent.context import build_turn_message
+from backend.agent.context import build_turn_message, next_hint_level
 from backend.agent.model import ModelClient, ModelRequest, TextDelta, ToolCall
 from backend.agent.triggers import Trigger
 from backend.db import Event
@@ -78,8 +78,45 @@ STAY_SILENT: dict[str, Any] = {
     },
 }
 
+GIVE_HINT: dict[str, Any] = {
+    "name": "give_hint",
+    "description": (
+        "Give the candidate a Hint because they are stuck or asked for help. `text` is spoken "
+        "to the candidate, so do not also write it as text. Levels climb one at a time: 1 a "
+        "probing question, 2 point at the relevant area, 3 name the technique, 4 a concrete "
+        "next step (never code). Set requested=true when the candidate explicitly asked for a "
+        "hint or the answer; they then get the next level. Never use it for Probes."
+    ),
+    "eager_input_streaming": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "level": {"type": "integer", "enum": [1, 2, 3, 4]},
+            "text": {"type": "string", "description": "The Hint, as spoken: no code."},
+            "requested": {"type": "boolean"},
+        },
+        "required": ["level", "text", "requested"],
+        "additionalProperties": False,
+    },
+}
+
+NOTE: dict[str, Any] = {
+    "name": "note",
+    "description": (
+        "Record a private observation for the feedback report, for example 'jumped into "
+        "coding without stating complexity'. Never shown to the candidate."
+    ),
+    "eager_input_streaming": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {"observation": {"type": "string"}},
+        "required": ["observation"],
+        "additionalProperties": False,
+    },
+}
+
 # Deterministic order: the tool list is part of the prompt-cached prefix.
-TOOLS = [RECORD_CLARIFICATION, SET_PHASE, STAY_SILENT]
+TOOLS = [RECORD_CLARIFICATION, SET_PHASE, STAY_SILENT, GIVE_HINT, NOTE]
 
 
 @dataclass(frozen=True)
@@ -90,6 +127,15 @@ class Clarification:
 
 
 @dataclass(frozen=True)
+class Hint:
+    level: int
+    """1-4, as enforced on the ladder (not necessarily the level the model asked for)."""
+    text: str
+    requested: bool
+    """The candidate explicitly asked for it."""
+
+
+@dataclass(frozen=True)
 class Decision:
     text: str
     clarifications: list[Clarification] = field(default_factory=list)
@@ -97,6 +143,10 @@ class Decision:
     """The last valid `set_phase` the model asked for."""
     silent_reason: str | None = None
     """The `stay_silent` reason, when the model chose silence."""
+    hint: Hint | None = None
+    """The Hint given this turn; its text is part of `text`."""
+    notes: list[str] = field(default_factory=list)
+    """Private observations for the Report."""
 
 
 def _clarification(value: dict[str, Any]) -> Clarification | None:
@@ -108,6 +158,20 @@ def _clarification(value: dict[str, Any]) -> Clarification | None:
     if by == "interviewer" or by == "candidate":
         return Clarification(question.strip(), answer.strip(), by)
     return None
+
+
+def _hint(value: dict[str, Any], next_level: int) -> Hint | None:
+    """Put a `give_hint` call on the ladder: an explicit request gets exactly the next level,
+    any other Hint at most the next level (rungs are never skipped)."""
+    text, level, requested = value.get("text"), value.get("level"), value.get("requested") is True
+    if not (isinstance(text, str) and text.strip()):
+        return None
+    try:
+        asked = int(level)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        asked = next_level
+    enforced = next_level if requested else max(1, min(asked, next_level))
+    return Hint(enforced, text.strip(), requested)
 
 
 class Interviewer:
@@ -150,6 +214,8 @@ class Interviewer:
         clarifications: list[Clarification] = []
         phase: str | None = None
         silent_reason: str | None = None
+        hint: Hint | None = None
+        notes: list[str] = []
         async for event in self._model.stream(request):
             if isinstance(event, TextDelta):
                 if event.text:
@@ -171,6 +237,21 @@ class Interviewer:
                 reason = event.input.get("reason")
                 given = reason.strip() if isinstance(reason, str) else ""
                 silent_reason = given or "(none given)"
+            elif event.name == GIVE_HINT["name"]:
+                if hint is not None:
+                    logger.warning("ignoring a second give_hint in one turn")
+                elif (hint := _hint(event.input, next_hint_level(events))) is not None:
+                    spoken_hint = (" " if "".join(text).strip() else "") + hint.text
+                    text.append(spoken_hint)  # the Hint's text is what is spoken
+                    await on_text(spoken_hint)
+                else:
+                    logger.warning("ignoring invalid give_hint input: %r", event.input)
+            elif event.name == NOTE["name"]:
+                observation = event.input.get("observation")
+                if isinstance(observation, str) and observation.strip():
+                    notes.append(observation.strip())
+                else:
+                    logger.warning("ignoring invalid note input: %r", event.input)
             else:
                 logger.warning("ignoring unknown tool call %r", event.name)
         spoken = "".join(text).strip()
@@ -178,5 +259,10 @@ class Interviewer:
             logger.warning("stay_silent called alongside speech; the speech stands")
             silent_reason = None
         return Decision(
-            text=spoken, clarifications=clarifications, phase=phase, silent_reason=silent_reason
+            text=spoken,
+            clarifications=clarifications,
+            phase=phase,
+            silent_reason=silent_reason,
+            hint=hint,
+            notes=notes,
         )
