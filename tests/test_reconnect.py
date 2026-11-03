@@ -34,7 +34,7 @@ async def test_a_reconnecting_client_gets_the_events_it_missed_then_the_timer(
 
     messages = await harness.reconnect(session_id, last_seq=seen)
 
-    replay, timer = messages
+    replay, timer = messages[:2]
     assert replay["type"] == "replay"
     types = [e["type"] for e in replay["events"]]
     assert types[:3] == ["code_snapshot", "utterance", "utterance"]
@@ -59,7 +59,7 @@ async def test_a_client_that_saw_everything_gets_an_empty_replay(
 ) -> None:
     session_id = await _connected(harness)
 
-    replay, _timer = await harness.reconnect(session_id, last_seq=_last_seq(harness, session_id))
+    replay = (await harness.reconnect(session_id, last_seq=_last_seq(harness, session_id)))[0]
 
     assert replay["events"] == []
 
@@ -68,15 +68,9 @@ async def test_a_reconnecting_client_receives_live_messages_after_the_replay(
     harness: LiveSessionHarness,
 ) -> None:
     session_id = await _connected(harness)
-    received = []
-
-    async def listener(message: dict[str, object]) -> None:
-        received.append(message)
-
-    live = harness.manager.live(session_id)
-    assert live is not None
-    await live.attach(listener, last_seq=_last_seq(harness, session_id))
+    received = await harness.reconnect(session_id, last_seq=_last_seq(harness, session_id))
     harness.model.script("Go ahead.")
+
     await harness.say(session_id, "Can I start?")
 
     assert [m["type"] for m in received] == [
@@ -85,6 +79,31 @@ async def test_a_reconnecting_client_receives_live_messages_after_the_replay(
         "interviewer_delta",
         "interviewer_done",
     ]
+
+
+async def test_messages_sent_while_the_replay_goes_out_follow_it_in_order(
+    harness: LiveSessionHarness,
+) -> None:
+    session_id = await _connected(harness)
+    slow = asyncio.Event()
+    connecting = asyncio.create_task(
+        harness.reconnect(session_id, last_seq=_last_seq(harness, session_id), slow_replay=slow)
+    )
+    await asyncio.sleep(0)  # the replay is on its way
+    harness.model.script("Go ahead.")
+    await harness.say(session_id, "Can I start?")  # streamed while the replay is held up
+
+    slow.set()
+    received = await asyncio.wait_for(connecting, TIMEOUT_S)
+
+    assert [m["type"] for m in received] == [
+        "replay",
+        "timer",
+        "interviewer_delta",
+        "interviewer_done",
+    ]
+    # the replay was read on connecting: the reply arrives live, not in it
+    assert received[0]["events"] == []
 
 
 async def test_messages_for_logged_events_carry_their_seq(harness: LiveSessionHarness) -> None:
@@ -111,7 +130,7 @@ async def test_a_client_reconnecting_after_the_end_is_told_the_session_ended(
     harness.model.script(submit_report())
     await harness.send(session_id, "end_session")
 
-    replay, timer = await harness.reconnect(session_id, last_seq=seen)
+    replay, timer = (await harness.reconnect(session_id, last_seq=seen))[:2]
 
     assert replay["events"][-1]["type"] == "session_ended"
     assert timer["state"] == "ended"
@@ -181,7 +200,7 @@ async def test_a_recent_session_resumes_after_a_restart_with_the_timer_on_the_wa
     seen = _last_seq(harness, session_id)
 
     await harness.restart(downtime_s=120)
-    replay, timer = await harness.reconnect(session_id, last_seq=seen)
+    replay, timer = (await harness.reconnect(session_id, last_seq=seen))[:2]
 
     assert harness.session(session_id).status == "live"
     assert replay["events"] == []

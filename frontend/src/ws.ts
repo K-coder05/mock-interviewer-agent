@@ -58,6 +58,8 @@ export type ServerMessage =
   | { type: "run_started"; snapshot_seq: number }
   | ({ type: "run_result"; seq: number } & RunResult);
 
+export type ServerMessageHandler = (message: ServerMessage) => void;
+
 export type ConnectionState = "open" | "reconnecting" | "closed";
 
 const RETRY_MIN_MS = 500;
@@ -74,7 +76,7 @@ export class SessionSocket {
   constructor(
     private readonly sessionId: string,
     private readonly lastSeq: () => number,
-    private readonly onMessage: (message: ServerMessage) => void,
+    private readonly onMessage: ServerMessageHandler,
     private readonly onState: (state: ConnectionState) => void = () => {},
   ) {
     this.connect();

@@ -165,7 +165,9 @@ class LiveSession:
     def resume(self) -> None:
         """Rebuild the Session from its event log after a backend restart. Time carries on from
         the wall clock: the downtime counts against the timer, and new events are timed after
-        it. Triggers that came due while the backend was down are dropped, not fired late."""
+        it. Triggers that came due while the backend was down are dropped, not fired late; the
+        timer itself catches up on the next tick (warning, time-up, or the auto-end with its
+        closing; it is only rebuilt when a client connects, so the Candidate is there)."""
         events = self._store.events(self.id)
         elapsed = self._clock.wall_ms() - _wall_ms(self.record.created_at)
         elapsed = max(elapsed, events[-1].t_ms if events else 0)
@@ -754,7 +756,7 @@ class SessionManager:
         idle_ms = self._defaults.abandon_after_idle_min * 60_000
         abandoned = []
         for record in self._store.list_sessions():
-            if record.status != "live" or record.id in self._live:
+            if record.status != "live":
                 continue
             last_ms = _wall_ms(record.created_at) + (self._store.last_event_t_ms(record.id) or 0)
             if now - last_ms >= idle_ms:

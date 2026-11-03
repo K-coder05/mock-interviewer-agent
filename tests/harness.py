@@ -211,19 +211,24 @@ class LiveSessionHarness:
         live.client_connected()
         await live.wait_for_interviewer()
 
-    async def reconnect(self, session_id: str, *, last_seq: int) -> list[ServerMessage]:
-        """A client (re)connects having seen the log up to `last_seq`, as the WebSocket does;
-        returns the messages it received on connecting (the replay, then the timer state)."""
+    async def reconnect(
+        self, session_id: str, *, last_seq: int, slow_replay: asyncio.Event | None = None
+    ) -> list[ServerMessage]:
+        """A client (re)connects having seen the log up to `last_seq`, as the WebSocket does.
+        Returns the list of messages that client receives (the replay, then the timer state,
+        then whatever follows; it stays connected). With `slow_replay`, sending the replay
+        takes until the test sets it: run the call as a task meanwhile."""
         live = self.manager.live(session_id)
         assert live is not None, f"no live Session {session_id}"
         received: list[ServerMessage] = []
 
         async def capture(message: ServerMessage) -> None:
+            if message["type"] == "replay" and slow_replay is not None:
+                await slow_replay.wait()
             received.append(message)
 
-        unsubscribe = await live.attach(capture, last_seq=last_seq)
+        await live.attach(capture, last_seq=last_seq)
         await live.wait_for_interviewer()
-        unsubscribe()
         return received
 
     async def say(self, session_id: str, text: str) -> None:

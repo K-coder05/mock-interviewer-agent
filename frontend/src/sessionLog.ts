@@ -16,6 +16,20 @@ function isLocal(entry: TranscriptEntry): boolean {
 /** Add logged utterances to the transcript without duplicating what it already shows: an
  * Interviewer reply replaces its streamed entry (same msg_id); the Candidate's own words match
  * the entry the page added when they were sent. */
+function replaceOrAppend(
+  entries: TranscriptEntry[],
+  index: number,
+  entry: TranscriptEntry,
+): TranscriptEntry[] {
+  return index < 0
+    ? [...entries, entry]
+    : [...entries.slice(0, index), entry, ...entries.slice(index + 1)];
+}
+
+function lastOfType(events: SessionEvent[], ...types: string[]): SessionEvent | undefined {
+  return events.filter((e) => types.includes(e.type)).pop();
+}
+
 export function mergeUtterances(
   entries: TranscriptEntry[],
   events: SessionEvent[],
@@ -26,21 +40,13 @@ export function mergeUtterances(
     const text = String(e.payload.text);
     if (e.payload.speaker === "interviewer") {
       const key = typeof e.payload.msg_id === "string" ? e.payload.msg_id : e.id;
-      const entry: TranscriptEntry = { key, speaker: "interviewer", text };
       const index = merged.findIndex((x) => x.key === key);
-      merged =
-        index < 0
-          ? [...merged, entry]
-          : [...merged.slice(0, index), entry, ...merged.slice(index + 1)];
+      merged = replaceOrAppend(merged, index, { key, speaker: "interviewer", text });
     } else {
-      const entry: TranscriptEntry = { key: e.id, speaker: "user", text };
       const index = merged.findIndex(
         (x) => isLocal(x) && x.speaker === "user" && x.text.trim() === text.trim(),
       );
-      merged =
-        index < 0
-          ? [...merged, entry]
-          : [...merged.slice(0, index), entry, ...merged.slice(index + 1)];
+      merged = replaceOrAppend(merged, index, { key: e.id, speaker: "user", text });
     }
   }
   return merged;
@@ -55,10 +61,9 @@ export function phaseFrom(events: SessionEvent[], phase: Phase = "clarify"): Pha
   return phase;
 }
 
-/** The mic as the Session last logged it, if the events say. */
-export function mutedFrom(events: SessionEvent[]): boolean | undefined {
-  const last = events.filter((e) => e.type === "mic_muted" || e.type === "mic_unmuted").pop();
-  return last && last.type === "mic_muted";
+/** The mic as the Session last logged it. */
+export function mutedFrom(events: SessionEvent[]): boolean {
+  return lastOfType(events, "mic_muted", "mic_unmuted")?.type === "mic_muted";
 }
 
 export function clarificationsFrom(events: SessionEvent[]): Clarification[] {
@@ -69,12 +74,12 @@ export function clarificationsFrom(events: SessionEvent[]): Clarification[] {
 
 /** The code as last recorded, if any snapshot was. */
 export function codeFrom(events: SessionEvent[]): string | undefined {
-  const last = events.filter((e) => e.type === "code_snapshot").pop();
+  const last = lastOfType(events, "code_snapshot");
   return last && String(last.payload.code);
 }
 
 export function lastRunFrom(events: SessionEvent[]): RunResult | undefined {
-  const last = events.filter((e) => e.type === "run").pop();
+  const last = lastOfType(events, "run");
   return last && (last.payload as unknown as RunResult);
 }
 

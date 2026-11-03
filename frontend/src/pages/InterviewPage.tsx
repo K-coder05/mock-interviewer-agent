@@ -22,6 +22,7 @@ import {
   PHASE_LABELS,
   PHASES,
   RunResult,
+  ServerMessageHandler,
   SessionSocket,
 } from "../ws";
 import { isEcho } from "../voice/echoGuard";
@@ -92,7 +93,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         setTranscript(mergeUtterances([], events));
         setClarifications(clarificationsFrom(events));
         setPhase(phaseFrom(events));
-        setMuted(mutedFrom(events) ?? false);
+        setMuted(mutedFrom(events));
         setResult(lastRunFrom(events) ?? null);
         setInitialCode(codeFrom(events) ?? session.starter_code ?? "");
         setEnded(session.status !== "live");
@@ -117,8 +118,12 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       : null;
     tts?.setEnabled(!interviewerMutedRef.current);
     ttsRef.current = tts;
-    const onMessage: ConstructorParameters<typeof SessionSocket>[2] = (message) => {
-      if ("seq" in message) lastSeqRef.current = Math.max(lastSeqRef.current, message.seq);
+    const onMessage: ServerMessageHandler = (message) => {
+      if ("seq" in message) {
+        // already applied from a replay (the client attached between the append and the send)
+        if (message.seq <= lastSeqRef.current) return;
+        lastSeqRef.current = message.seq;
+      }
       if (message.type === "replay") {
         // the events missed while disconnected (the code buffer here is newer than any snapshot)
         const { events } = message;
@@ -126,8 +131,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         setTranscript((entries) => mergeUtterances(entries, events));
         setClarifications((list) => [...list, ...clarificationsFrom(events)]);
         setPhase((current) => phaseFrom(events, current));
-        const replayedMute = mutedFrom(events);
-        if (replayedMute !== undefined) setMuted(replayedMute);
+        // not the mic: the page's own toggles come back here, older than a toggle still queued
         const run = lastRunFrom(events);
         if (run) setResult(run);
         if (events.some((e) => e.type === "session_ended")) setEnded(true);
