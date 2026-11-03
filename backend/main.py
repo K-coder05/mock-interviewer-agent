@@ -68,6 +68,7 @@ def create_app(
         defaults=SessionDefaults(
             duration_min=config.default_duration_min,
             timeout_grace_s=config.timeout_grace_s,
+            user_phase_lock_s=config.user_phase_lock_s,
             models=config.models,
         ),
     )

@@ -126,6 +126,8 @@ export interface Metrics {
   runs: number;
   failed_runs: number;
   error_types: Record<string, number>;
+  /** Absent on Reports generated before ticket 08. */
+  phase_ms?: Record<string, number>;
   silence_gaps: { start_ms: number; end_ms: number; duration_ms: number }[];
   candidate_words: number;
   interviewer_words: number;

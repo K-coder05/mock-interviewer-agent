@@ -14,6 +14,7 @@ from typing import Any, Literal
 from backend.agent.context import build_turn_message
 from backend.agent.model import ModelClient, ModelRequest, TextDelta, ToolCall
 from backend.db import Event
+from backend.phases import PHASES
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,23 @@ RECORD_CLARIFICATION: dict[str, Any] = {
     },
 }
 
-TOOLS = [RECORD_CLARIFICATION]
+SET_PHASE: dict[str, Any] = {
+    "name": "set_phase",
+    "description": (
+        "Move the interview's current Phase when the conversation has moved on (for example "
+        "from clarifying to discussing the approach). A Phase is only a label and may move "
+        "backwards. Ignored while the candidate's own choice of Phase is still locked."
+    ),
+    "eager_input_streaming": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {"phase": {"type": "string", "enum": list(PHASES)}},
+        "required": ["phase"],
+        "additionalProperties": False,
+    },
+}
+
+TOOLS = [RECORD_CLARIFICATION, SET_PHASE]
 
 
 @dataclass(frozen=True)
@@ -61,6 +78,8 @@ class Clarification:
 class Decision:
     text: str
     clarifications: list[Clarification] = field(default_factory=list)
+    phase: str | None = None
+    """The last valid `set_phase` the model asked for."""
 
 
 def _clarification(value: dict[str, Any]) -> Clarification | None:
@@ -86,6 +105,7 @@ class Interviewer:
         *,
         now_ms: int,
         remaining_ms: int | None = None,
+        phase_lock_ms: int = 0,
         trigger: Trigger,
         on_text: Callable[[str], Awaitable[None]],
     ) -> Decision:
@@ -96,7 +116,11 @@ class Interviewer:
             system=self._system,
             messages=[
                 {"role": "user", "content": build_turn_message(
-                        events, now_ms=now_ms, remaining_ms=remaining_ms, trigger=trigger
+                        events,
+                        now_ms=now_ms,
+                        remaining_ms=remaining_ms,
+                        phase_lock_ms=phase_lock_ms,
+                        trigger=trigger,
                     )}
             ],
             tools=TOOLS,
@@ -105,6 +129,7 @@ class Interviewer:
         )
         text: list[str] = []
         clarifications: list[Clarification] = []
+        phase: str | None = None
         async for event in self._model.stream(request):
             if isinstance(event, TextDelta):
                 if event.text:
@@ -117,6 +142,11 @@ class Interviewer:
                     clarifications.append(clarification)
                 else:
                     logger.warning("ignoring invalid record_clarification input: %r", event.input)
+            elif event.name == SET_PHASE["name"]:
+                if event.input.get("phase") in PHASES:
+                    phase = str(event.input["phase"])
+                else:
+                    logger.warning("ignoring invalid set_phase input: %r", event.input)
             else:
                 logger.warning("ignoring unknown tool call %r", event.name)
-        return Decision(text="".join(text).strip(), clarifications=clarifications)
+        return Decision(text="".join(text).strip(), clarifications=clarifications, phase=phase)

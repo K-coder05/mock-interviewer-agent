@@ -5,7 +5,18 @@ export type ClientMessage =
   | { type: "run"; code: string; stdin: string }
   | { type: "utterance"; text: string; channel: "text" }
   | { type: "ui_event"; event: "paste"; text: string }
+  | { type: "set_phase"; phase: Phase }
   | { type: "end_session" };
+
+export const PHASES = ["clarify", "approach", "implement", "test", "wrap_up"] as const;
+export type Phase = (typeof PHASES)[number];
+export const PHASE_LABELS: Record<Phase, string> = {
+  clarify: "Clarify",
+  approach: "Approach",
+  implement: "Implement",
+  test: "Test",
+  wrap_up: "Wrap-up",
+};
 
 export interface RunResult {
   snapshot_seq: number;
@@ -28,6 +39,7 @@ export type TimerState = "running" | "warning" | "time_up" | "ended";
 
 export type ServerMessage =
   | { type: "timer"; state: TimerState; remaining_ms: number; duration_ms: number }
+  | { type: "phase"; phase: Phase; by: "agent" | "user" }
   | { type: "session_ended"; reason: "user" | "timeout" }
   | { type: "error"; code: string; message: string }
   | { type: "interviewer_delta"; msg_id: string; text: string }

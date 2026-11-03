@@ -26,6 +26,7 @@ from backend.db import Event, SessionRecord, Store
 from backend.feedback.metrics import LARGE_PASTE_CHARS
 from backend.feedback.generator import ReportGenerator
 from backend.ids import new_id
+from backend.phases import PHASES, ChangedBy, current as current_phase
 from backend.runner import Runner
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class SessionDefaults:
     duration_min: int
     timeout_grace_s: int
     models: ModelIds
+    user_phase_lock_s: int = 120
 
 
 def _title_of(problem_md: str) -> str:
@@ -105,6 +107,7 @@ class LiveSession:
         self._listeners: list[Listener] = []
         self._duration_ms = int(record.settings["duration_min"]) * 60_000
         self._grace_ms = int(record.settings["timeout_grace_s"]) * 1000
+        self._phase_lock_ms = int(record.settings.get("user_phase_lock_s", 120)) * 1000
         self._timer_poll_s = timer_poll_s
         self._timer_started_ms: int | None = None  # clock reading when the greeting began
         self._timer_task: asyncio.Task[None] | None = None
@@ -164,6 +167,8 @@ class LiveSession:
             await self._on_run(message)
         elif kind == "utterance":
             await self._on_utterance(message)
+        elif kind == "set_phase":
+            await self._on_set_phase(message)
         elif kind == "ui_event":
             self._on_ui_event(message)
         else:
@@ -307,6 +312,30 @@ class LiveSession:
         if message.get("event") == "paste" and isinstance(text, str) and len(text) > LARGE_PASTE_CHARS:
             self._append("paste", {"length": len(text), "text": text[:PASTE_TEXT_CAP]})
 
+    async def _on_set_phase(self, message: dict[str, Any]) -> None:
+        phase = message.get("phase")
+        if phase not in PHASES:
+            await self._emit_error("invalid_message", f"set_phase requires one of {list(PHASES)}")
+            return
+        await self._change_phase(phase, "user")
+
+    async def _change_phase(self, phase: str, by: ChangedBy) -> None:
+        """Move the Phase (any direction). The Interviewer's change is ignored for the lock
+        after the Candidate's last one; the Candidate's always applies."""
+        state = current_phase(self._store.events(self.id))
+        if phase == state.phase:
+            return
+        now = self._now_ms()
+        if (
+            by == "agent"
+            and state.user_changed_ms is not None
+            and now < state.user_changed_ms + self._phase_lock_ms
+        ):
+            logger.info("ignoring Interviewer set_phase(%s) during the user lock", phase)
+            return
+        self._append("phase_changed", {"from": state.phase, "to": phase, "by": by})
+        await self._emit({"type": "phase", "phase": phase, "by": by})
+
     async def _on_utterance(self, message: dict[str, Any]) -> None:
         text, channel = message.get("text"), message.get("channel", "text")
         if not isinstance(text, str) or not text.strip() or channel != "text":
@@ -363,6 +392,7 @@ class LiveSession:
                 self._store.events(self.id),
                 now_ms=start,
                 remaining_ms=None if self._timer_started_ms is None else self._remaining_ms(),
+                phase_lock_ms=self._phase_lock_ms,
                 trigger=trigger,
                 on_text=on_text,
             )
@@ -383,6 +413,8 @@ class LiveSession:
             payload = dataclasses.asdict(clarification)
             event = self._append("clarification", payload)
             await self._emit({"type": "clarification", "seq": event.seq, **payload})
+        if decision.phase is not None:
+            await self._change_phase(decision.phase, "agent")
         return decision
 
     def _append_utterance(
@@ -500,6 +532,7 @@ class SessionManager:
             "duration_min": duration_min or self._defaults.duration_min,
             "timeout_grace_s": self._defaults.timeout_grace_s,
             "autocomplete": autocomplete,
+            "user_phase_lock_s": self._defaults.user_phase_lock_s,
             "style": style.to_settings(),
             "models": dataclasses.asdict(self._defaults.models),
         }

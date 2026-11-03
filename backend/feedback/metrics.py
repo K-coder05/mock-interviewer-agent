@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from backend.db import Event
+from backend.phases import time_per_phase
 from backend.feedback.tests import ExecutedTest, extract_executed_tests
 
 SILENCE_GAP_MS = 60_000
@@ -119,6 +120,7 @@ def compute_metrics(
             1 for r in runs if r.payload.get("exit_code") != 0 or r.payload.get("timed_out")
         ),
         "error_types": dict(Counter(t for r in runs if (t := _error_type(r)))),
+        "phase_ms": time_per_phase(events, end_ms),
         "silence_gaps": _silence_gaps(events, end_ms),
         "candidate_words": words["user"],
         "interviewer_words": words["interviewer"],

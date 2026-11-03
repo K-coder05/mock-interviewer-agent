@@ -56,6 +56,14 @@ body { margin: 0; }
 .setup select, .setup input[type="number"] { font: inherit; font-weight: 400; padding: 0.5rem; border: 1px solid #d0d5dd; border-radius: 6px; }
 .reading { text-align: center; margin-top: 20vh; font-size: 1.2rem; }
 .setup input[type="number"] { width: 8rem; }
+.phases { display: flex; gap: 0.25rem; }
+.phase { padding: 0.2rem 0.6rem; border: 1px solid #d0d5dd; border-radius: 999px; background: white; font-size: 0.85rem; cursor: pointer; }
+.phase.current { background: #1d4ed8; border-color: #1d4ed8; color: white; font-weight: 600; }
+.phase:disabled { cursor: default; opacity: 0.7; }
+.phase-bar { display: flex; height: 1.4rem; border-radius: 4px; overflow: hidden; border: 1px solid #d0d5dd; }
+.phase-bar span { display: block; min-width: 2px; }
+.phase-legend { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0.4rem 0; font-size: 0.9rem; list-style: none; padding: 0; }
+.phase-swatch { display: inline-block; width: 0.7rem; height: 0.7rem; margin-right: 0.3rem; border-radius: 2px; }
 .timer { margin-left: auto; font: 600 1.1rem ui-monospace, Menlo, monospace; }
 .timer.warning, .timer.time_up { color: #b42318; }
 .timer-note { color: #b42318; font-size: 0.9rem; }

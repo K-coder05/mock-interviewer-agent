@@ -6,7 +6,7 @@ import { CodeEditor } from "../components/CodeEditor";
 import { Console } from "../components/Console";
 import { Conversation, TranscriptEntry } from "../components/Conversation";
 import { Timer, TimerSnapshot } from "../components/Timer";
-import { Clarification, RunResult, SessionSocket } from "../ws";
+import { Clarification, Phase, PHASE_LABELS, PHASES, RunResult, SessionSocket } from "../ws";
 
 function transcriptFrom(events: SessionEvent[]): TranscriptEntry[] {
   return events
@@ -16,6 +16,16 @@ function transcriptFrom(events: SessionEvent[]): TranscriptEntry[] {
       speaker: e.payload.speaker === "interviewer" ? "interviewer" : "user",
       text: String(e.payload.text),
     }));
+}
+
+function phaseFrom(events: SessionEvent[]): Phase {
+  let phase: Phase = "clarify";
+  for (const e of events) {
+    if (e.type === "phase_changed" && PHASES.includes(e.payload.to as Phase)) {
+      phase = e.payload.to as Phase;
+    }
+  }
+  return phase;
 }
 
 function clarificationsFrom(events: SessionEvent[]): Clarification[] {
@@ -34,6 +44,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [timer, setTimer] = useState<TimerSnapshot | null>(null);
   const [ended, setEnded] = useState(false);
+  const [phase, setPhase] = useState<Phase>("clarify");
   const stdinRef = useRef("");
   stdinRef.current = stdin;
   const bufferRef = useRef("");
@@ -47,6 +58,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         if (cancelled) return;
         setTranscript(transcriptFrom(events));
         setClarifications(clarificationsFrom(events));
+        setPhase(phaseFrom(events));
         setEnded(session.status !== "live");
         setSession(session);
       })
@@ -103,6 +115,8 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
           remainingMs: message.remaining_ms,
           receivedAt: performance.now(),
         });
+      } else if (message.type === "phase") {
+        setPhase(message.phase);
       } else if (message.type === "session_ended") {
         setEnded(true); // Report generation has started; the top bar links to it
       } else if (message.type === "clarification") {
@@ -145,6 +159,11 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     ]);
   };
 
+  const choosePhase = (next: Phase) => {
+    setPhase(next);
+    socketRef.current?.send({ type: "set_phase", phase: next });
+  };
+
   const endInterview = () => {
     if (!window.confirm("End the interview now?")) return;
     syncRef.current?.flush();
@@ -159,6 +178,20 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     <div className="interview">
       <header className="topbar">
         <strong>{session.title}</strong>
+        <nav className="phases" aria-label="Phase">
+          {PHASES.map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={p === phase ? "phase current" : "phase"}
+              aria-current={p === phase ? "step" : undefined}
+              disabled={ended}
+              onClick={() => choosePhase(p)}
+            >
+              {PHASE_LABELS[p]}
+            </button>
+          ))}
+        </nav>
         {error && <span className="error">{error}</span>}
         <Timer timer={ended ? { state: "ended", remainingMs: 0, receivedAt: 0 } : timer} />
         {ended ? (

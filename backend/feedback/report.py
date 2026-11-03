@@ -23,13 +23,13 @@ from backend.feedback.metrics import compute_metrics
 from backend.feedback.prompt import REPORT_SYSTEM_PROMPT
 from backend.feedback.rubric import DIMENSION_KEYS, DIMENSIONS, overall_signal
 from backend.feedback.tests import ExecutedTest, extract_executed_tests
+from backend.phases import WRAP_UP
 
 logger = logging.getLogger(__name__)
 
 REPORT_MAX_TOKENS = 32_000
 ATTEMPTS = 2  # one retry
 CORRECTNESS_NOTE = "Assessed by reading the code, not by executing it."
-WRAP_UP = "wrap_up"  # the Phase whose start freezes the code judged for Correctness
 TYPICAL = "Typical case"
 OTHER = "Other"
 

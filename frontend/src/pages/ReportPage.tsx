@@ -10,6 +10,7 @@ import {
   Strength,
   TestingBreakdown,
 } from "../api";
+import { Phase, PHASE_LABELS, PHASES } from "../ws";
 
 const POLL_MS = 2000;
 
@@ -249,6 +250,40 @@ function duration(ms: number | null | undefined): string {
   return ms == null ? "never" : clock(ms);
 }
 
+const PHASE_COLORS: Record<Phase, string> = {
+  clarify: "#7c3aed",
+  approach: "#0891b2",
+  implement: "#1d4ed8",
+  test: "#16a34a",
+  wrap_up: "#d97706",
+};
+
+function PhaseTimeline({ phaseMs }: { phaseMs: Record<string, number> }) {
+  const total = PHASES.reduce((sum, p) => sum + (phaseMs[p] ?? 0), 0);
+  if (total <= 0) return null;
+  return (
+    <div className="phase-timeline">
+      <div className="phase-bar" role="img" aria-label="Time per Phase">
+        {PHASES.filter((p) => (phaseMs[p] ?? 0) > 0).map((p) => (
+          <span
+            key={p}
+            title={`${PHASE_LABELS[p]}: ${clock(phaseMs[p])}`}
+            style={{ flexGrow: phaseMs[p], background: PHASE_COLORS[p] }}
+          />
+        ))}
+      </div>
+      <ul className="phase-legend">
+        {PHASES.map((p) => (
+          <li key={p}>
+            <span className="phase-swatch" style={{ background: PHASE_COLORS[p] }} />
+            {PHASE_LABELS[p]} {clock(phaseMs[p] ?? 0)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function MetricsSection({ metrics }: { metrics: Partial<Metrics> }) {
   const m = metrics;
   const hints = Object.entries(m.hints_by_level ?? {})
@@ -260,6 +295,7 @@ function MetricsSection({ metrics }: { metrics: Partial<Metrics> }) {
   return (
     <section className="metrics">
       <h2>Metrics</h2>
+      {m.phase_ms && <PhaseTimeline phaseMs={m.phase_ms} />}
       <ul>
         {m.time_to_first_code_ms !== undefined && (
         <li>First code at {duration(m.time_to_first_code_ms)}, first Run at {duration(m.time_to_first_run_ms)}, first test at {duration(m.time_to_first_test_ms)}</li>

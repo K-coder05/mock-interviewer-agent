@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.db import Event
+from backend.phases import OVERRUN_MIN, current
 
 RULES = (Path(__file__).parent / "prompts" / "interviewer.md").read_text()
 
@@ -96,7 +97,12 @@ def _clip(text: str, limit: int = 2000) -> str:
 
 
 def build_turn_message(
-    events: Sequence[Event], *, now_ms: int, trigger: str, remaining_ms: int | None = None
+    events: Sequence[Event],
+    *,
+    now_ms: int,
+    trigger: str,
+    remaining_ms: int | None = None,
+    phase_lock_ms: int = 0,
 ) -> str:
     """The single user message for a decision call, derived only from the event log."""
     clarifications: list[str] = []
@@ -116,6 +122,20 @@ def build_turn_message(
         elif event.type == "run":
             runs.append(event)
 
+    phase = current(events)
+    phase_lines = [f"{phase.phase} (for {_clock(max(0, now_ms - phase.since_ms))})"]
+    if phase.user_changed_ms is not None and now_ms < phase.user_changed_ms + phase_lock_ms:
+        phase_lines.append(
+            "The candidate set this Phase themselves; set_phase is ignored until "
+            f"{_clock(phase.user_changed_ms + phase_lock_ms)}."
+        )
+    overrun = OVERRUN_MIN.get(phase.phase)
+    if overrun is not None and now_ms - phase.since_ms > overrun * 60_000:
+        phase_lines.append(
+            f"This Phase has overrun ({overrun} minutes is the guide): bring it to a close and "
+            "move the interview on."
+        )
+
     numbered = "\n".join(f"{i:>3} | {line}" for i, line in enumerate(code.splitlines(), 1))
     run_lines = [
         f"[{_clock(r.t_ms)}] exit {r.payload['exit_code']}"
@@ -128,6 +148,7 @@ def build_turn_message(
         [
             f"<elapsed>{_clock(now_ms)}</elapsed>",
             *([] if remaining_ms is None else [f"<time_left>{_clock(max(0, remaining_ms))}</time_left>"]),
+            "<phase>\n" + "\n".join(phase_lines) + "\n</phase>",
             "<clarifications>\n" + ("\n".join(clarifications) or "(none yet)") + "\n</clarifications>",
             "<transcript>\n" + ("\n".join(transcript) or "(nothing said yet)") + "\n</transcript>",
             "<current_code>\n" + (numbered or "(empty)") + "\n</current_code>",
