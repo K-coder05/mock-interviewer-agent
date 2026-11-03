@@ -261,7 +261,9 @@ function MetricsSection({ metrics }: { metrics: Partial<Metrics> }) {
     <section className="metrics">
       <h2>Metrics</h2>
       <ul>
+        {m.time_to_first_code_ms !== undefined && (
         <li>First code at {duration(m.time_to_first_code_ms)}, first Run at {duration(m.time_to_first_run_ms)}, first test at {duration(m.time_to_first_test_ms)}</li>
+        )}
         <li>
           {m.runs ?? 0} Runs, {m.failed_runs ?? 0} failed{errors && ` (${errors})`}
         </li>

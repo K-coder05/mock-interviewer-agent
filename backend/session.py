@@ -35,6 +35,7 @@ ServerMessage = dict[str, Any]
 Listener = Callable[[ServerMessage], Awaitable[None]]
 
 CLOSING_TIMEOUT_S = 30
+PASTE_TEXT_CAP = 5_000  # stored text of a paste event; `length` keeps the real size
 WARNING_MS = 5 * 60_000  # the timer turns red with this much time left
 
 __all__ = ["LiveSession", "ServerMessage", "SessionDefaults", "SessionManager", "Style"]
@@ -304,7 +305,7 @@ class LiveSession:
         smaller pastes and unknown events are ignored."""
         text = message.get("text")
         if message.get("event") == "paste" and isinstance(text, str) and len(text) > LARGE_PASTE_CHARS:
-            self._append("paste", {"length": len(text), "text": text})
+            self._append("paste", {"length": len(text), "text": text[:PASTE_TEXT_CAP]})
 
     async def _on_utterance(self, message: dict[str, Any]) -> None:
         text, channel = message.get("text"), message.get("channel", "text")

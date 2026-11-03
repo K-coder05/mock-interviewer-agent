@@ -102,7 +102,7 @@ def compute_metrics(
 
     spoken = words["user"] + words["interviewer"]
     hints = Counter(
-        e.payload.get("level") for e in events if e.type == "hint_given"
+        str(e.payload.get("level")) for e in events if e.type == "hint_given"
     )
     pastes = [
         {"t_ms": e.t_ms, "length": int(e.payload.get("length", 0))}
@@ -125,7 +125,7 @@ def compute_metrics(
         "candidate_talk_ratio": round(words["user"] / spoken, 2) if spoken else None,
         "coding_words": coding_words,
         "coding_words_per_minute": coding_wpm,
-        "hints_by_level": {str(level): hints.get(level, 0) for level in HINT_LEVELS},
+        "hints_by_level": {str(level): hints.get(str(level), 0) for level in HINT_LEVELS},
         "large_pastes": pastes,
         "muted_ms": _muted_ms(events, end_ms),
     }
