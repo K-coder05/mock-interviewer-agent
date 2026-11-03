@@ -59,16 +59,21 @@ export function webSpeechSupported(): boolean {
 
 // Errors after which restarting can't help.
 const FATAL_ERRORS = new Set(["not-allowed", "service-not-allowed", "audio-capture"]);
+// Restarts back off while the engine keeps failing (e.g. no network), up to the max.
 const RESTART_DELAY_MS = 250;
+const MAX_RESTART_DELAY_MS = 10_000;
 
 /** The browser's SpeechRecognition (Chrome/Edge), continuous with interim results. */
 export class WebSpeechProvider implements SpeechProvider {
   private recognition: Recognition | null = null;
+  private discarded: Recognition | null = null; // aborted after a silence boundary; ignored
   private active = false;
   private interim = "";
   private interimStartMs: number | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartDelayMs = RESTART_DELAY_MS;
+  private failed = false; // the current engine reported an error before ending
 
   constructor(
     private readonly callbacks: SpeechCallbacks,
@@ -88,6 +93,7 @@ export class WebSpeechProvider implements SpeechProvider {
     this.resetInterim();
     const recognition = this.recognition;
     this.recognition = null;
+    this.discarded = null;
     recognition?.abort();
   }
 
@@ -103,22 +109,31 @@ export class WebSpeechProvider implements SpeechProvider {
     recognition.interimResults = true;
     recognition.lang = this.lang;
     recognition.onresult = (event) => {
-      if (this.recognition === recognition) this.onResult(event);
+      if (this.recognition !== recognition) return;
+      this.restartDelayMs = RESTART_DELAY_MS; // it works: restart quickly next time
+      this.onResult(event);
     };
     recognition.onerror = (event) => {
-      if (this.recognition !== recognition || !FATAL_ERRORS.has(event.error)) return;
+      if (this.recognition !== recognition) return;
+      if (event.error !== "no-speech" && event.error !== "aborted") this.failed = true;
+      if (!FATAL_ERRORS.has(event.error)) return;
       this.stop();
       this.callbacks.onError?.(`Speech recognition stopped: ${event.error}`);
     };
     // The engine ends after long silences (and after abort()): restart while still listening.
     recognition.onend = () => {
-      if (this.recognition !== recognition || !this.active) return;
-      this.recognition = null;
+      if (recognition === this.discarded) this.discarded = null;
+      else if (recognition === this.recognition) this.recognition = null;
+      else return;
+      if (!this.active) return;
+      const delay = this.restartDelayMs;
+      if (this.failed) this.restartDelayMs = Math.min(delay * 2, MAX_RESTART_DELAY_MS);
       this.restartTimer = setTimeout(() => {
         this.restartTimer = null;
         if (this.active) this.listen();
-      }, RESTART_DELAY_MS);
+      }, delay);
     };
+    this.failed = false;
     this.recognition = recognition;
     try {
       recognition.start();
@@ -154,15 +169,18 @@ export class WebSpeechProvider implements SpeechProvider {
   }
 
   // No new result for a while: the interim text is the utterance. The engine would still
-  // finalize it later, so drop its pending result by restarting it (abort, then onend restarts).
+  // finalize it later, so discard that engine (its late results are ignored); its onend starts a
+  // fresh one.
   private endBySilence(): void {
     this.silenceTimer = null;
     const text = this.interim;
     if (!text.trim()) return;
     const startMs = this.interimStartMs ?? performance.now();
     this.resetInterim();
+    this.discarded = this.recognition;
+    this.recognition = null;
+    this.discarded?.abort();
     this.callbacks.onFinal(text.trim(), startMs, performance.now() - this.utteranceSilenceMs);
-    this.recognition?.abort();
   }
 
   private resetInterim(): void {

@@ -307,6 +307,8 @@ class TriggerEngine:
             self._speaking_until_ms = min(self._speaking_until_ms, event.t_ms)
         elif event.type in ("mic_muted", "mic_unmuted"):
             self._muted = event.type == "mic_muted"
+            if self._muted:  # a muted mic hears nothing: the Candidate isn't speaking
+                self._speaking_until_ms = min(self._speaking_until_ms, event.t_ms)
             self._last_code_activity_ms = max(self._last_code_activity_ms, event.t_ms)
         elif event.type == "trigger" and p.get("outcome") == "spoke" and p.get("proactive"):
             self._nudges_ms.append(event.t_ms)
@@ -325,6 +327,11 @@ class TriggerEngine:
         SPEAKING_WINDOW_MS after the last interim result, so a lost `active: false` can't block
         the Interviewer for good."""
         self._speaking_until_ms = now_ms + SPEAKING_WINDOW_MS if active else now_ms
+
+    @property
+    def muted(self) -> bool:
+        """The Candidate's mic is muted (as last logged)."""
+        return self._muted
 
     def speaking(self, now_ms: int) -> bool:
         return now_ms < self._speaking_until_ms
@@ -355,16 +362,21 @@ class TriggerEngine:
         """The reaction to the last Run, still waiting for its delay or held back by the
         guardrails, taken now to ride along with a reply to the Candidate (speech during the
         delay merges with the Run)."""
-        waiting = self._take_held_back_stuck()
+        waiting = self._take_held_back_run_reaction()
         if self._run_reaction is not None:
             waiting.append(self._run_reaction.trigger)
             self._run_reaction = None
         return waiting
 
-    def hold_back(self, trigger: Trigger) -> None:
+    def hold_back(self, trigger: Trigger, suppressed_by: Suppression) -> None:
         """A guardrail suppressed `trigger`. Reasons marked `retried` in REASONS wait and are
-        retried once the guardrails allow; the others are dropped (one Nudge per silence)."""
-        if REASONS[trigger.reason].retried and trigger not in self._held_back:
+        retried once the guardrails allow; the others are dropped (one Nudge per silence).
+        A Run's reaction held back only because the Candidate is speaking waits too: speech
+        is brief, and every Run gets its reaction."""
+        retried = REASONS[trigger.reason].retried or (
+            trigger.reason == "run" and suppressed_by == "speaking"
+        )
+        if retried and trigger not in self._held_back:
             self._held_back.append(trigger)
 
     def suppression(self, trigger: Trigger, now_ms: int) -> Suppression | None:
@@ -413,8 +425,8 @@ class TriggerEngine:
 
     def _observe_run(self, event: Event) -> None:
         """Each Run gets one reaction: `stuck` when this Run makes the Candidate look stuck,
-        else `run`. A held-back stuck Trigger is moot once a newer Run arrives."""
-        self._take_held_back_stuck()
+        else `run`. A held-back reaction is moot once a newer Run arrives."""
+        self._take_held_back_run_reaction()
         p = event.payload
         if p.get("exit_code") == 0 and not p.get("timed_out"):
             self._failing_streak = []
@@ -434,10 +446,10 @@ class TriggerEngine:
         due_ms = event.t_ms + round(self._config.run_reaction_delay_s * 1000)
         self._run_reaction = _RunReaction(due_ms, trigger)  # replaces a waiting one
 
-    def _take_held_back_stuck(self) -> list[Trigger]:
-        stuck = [t for t in self._held_back if t.reason == "stuck"]
-        self._held_back = [t for t in self._held_back if t.reason != "stuck"]
-        return stuck
+    def _take_held_back_run_reaction(self) -> list[Trigger]:
+        taken = [t for t in self._held_back if t.reason in ("stuck", "run")]
+        self._held_back = [t for t in self._held_back if t not in taken]
+        return taken
 
     def _run_finished(self, now_ms: int) -> Sequence[Trigger]:
         if self._run_reaction is None or now_ms < self._run_reaction.due_ms:

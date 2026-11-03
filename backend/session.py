@@ -14,7 +14,7 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from backend.agent.context import Style, build_system_prompt
 from backend.agent.interviewer import Decision, Interviewer
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 Speaker = Literal["user", "interviewer"]
 Channel = Literal["voice", "text"]
-CHANNELS: tuple[Channel, ...] = ("voice", "text")
+CHANNELS: tuple[Channel, ...] = get_args(Channel)
 ServerMessage = dict[str, Any]
 Listener = Callable[[ServerMessage], Awaitable[None]]
 
@@ -122,7 +122,6 @@ class LiveSession:
         self._warned = False
         self._time_up = False
         self._ending = False
-        self._muted = False
 
     @property
     def id(self) -> str:
@@ -177,7 +176,7 @@ class LiveSession:
         elif kind == "utterance":
             await self._on_utterance(message)
         elif kind == "speaking":
-            self._triggers.set_speaking(bool(message.get("active")), self._now_ms())
+            await self._on_speaking(message)
         elif kind == "set_phase":
             await self._on_set_phase(message)
         elif kind == "ui_event":
@@ -329,11 +328,16 @@ class LiveSession:
         if event == "paste" and isinstance(text, str) and len(text) > LARGE_PASTE_CHARS:
             self._append("paste", {"length": len(text), "text": text[:PASTE_TEXT_CAP]})
         elif event == "mute" and isinstance(muted := message.get("muted"), bool):
-            if muted != self._muted:
-                self._muted = muted
+            if muted != self._triggers.muted:
                 self._append("mic_muted" if muted else "mic_unmuted", {})
-                if muted:  # a muted mic hears nothing: the Candidate isn't speaking
-                    self._triggers.set_speaking(False, self._now_ms())
+
+    async def _on_speaking(self, message: dict[str, Any]) -> None:
+        """Interim speech (`active: true`) or its end: the never-interrupt guard."""
+        active = message.get("active")
+        if not isinstance(active, bool):
+            await self._emit_error("invalid_message", "speaking requires a boolean `active`")
+            return
+        self._triggers.set_speaking(active, self._now_ms())
 
     async def _on_set_phase(self, message: dict[str, Any]) -> None:
         phase = message.get("phase")
@@ -377,7 +381,7 @@ class LiveSession:
             if isinstance(client_start, (int, float)) and isinstance(client_end, (int, float)):
                 start = max(0, now - max(0, round(client_end - client_start)))
         self._append_utterance("user", text.strip(), start, channel=channel)
-        # a typed message always gets a reply
+        # a typed message always gets a reply; a spoken one is heard and may get one
         self._request_reply(Trigger("typed_message" if channel == "text" else "utterance"))
         for trigger in self._triggers.merge_waiting():  # e.g. a Run's reaction: one reply
             self._request_reply(trigger)
@@ -416,7 +420,7 @@ class LiveSession:
         if (held := self._triggers.suppression(lead, self._now_ms())) is not None:
             self._append("trigger", {**logged, "outcome": "suppressed", "suppressed_by": held})
             for trigger in (lead, *others):
-                self._triggers.hold_back(trigger)
+                self._triggers.hold_back(trigger, held)
             return
         try:
             decision = await self._decide(lead, others)

@@ -97,7 +97,11 @@ def load_config(
         ),
         triggers=TriggerConfig.from_settings(interview),
         voice=VoiceConfig(
-            utterance_silence_ms=int(raw.get("voice", {}).get("utterance_silence_ms", 1200))
+            utterance_silence_ms=int(
+                raw.get("voice", {}).get(
+                    "utterance_silence_ms", VoiceConfig.utterance_silence_ms
+                )
+            )
         ),
         raw=raw,
     )

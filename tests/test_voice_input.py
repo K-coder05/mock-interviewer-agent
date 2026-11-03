@@ -94,14 +94,16 @@ async def test_a_spoken_utterance_during_the_run_delay_is_merged_into_one_reply(
     assert trigger["coalesced"] == [{"reason": "run", "detail": "failed"}]
 
 
-async def test_an_utterance_requires_text_and_a_known_channel(
+async def test_utterance_and_speaking_messages_are_validated(
     harness: LiveSessionHarness,
 ) -> None:
     session_id = await _connected(harness)
     await harness.send(session_id, "utterance", text="hello", channel="telepathy")
     await harness.send(session_id, "utterance", text="  ", channel="voice")
+    await harness.send(session_id, "speaking", active="false")
 
     assert [m["code"] for m in harness.messages(session_id, "error")] == [
+        "invalid_message",
         "invalid_message",
         "invalid_message",
     ]
@@ -187,6 +189,32 @@ async def test_a_spoken_reply_waits_for_the_candidate_to_finish(
     harness.model.script("Yes, ascending.")  # their next utterance asks again
     await harness.speak(session_id, "or descending")
     assert _triggers(harness, session_id)[-1]["outcome"] == "spoke"
+
+
+async def test_a_run_reaction_merged_into_a_held_back_spoken_reply_is_not_lost(
+    harness: LiveSessionHarness,
+) -> None:
+    session_id = await _connected(harness)
+    await harness.send(session_id, "set_phase", phase="implement")
+    harness.advance(50)
+    await harness.send(session_id, "run", code="raise ValueError('x')\n")
+    await harness.finish_run(session_id)
+    await harness.speaking(session_id)  # still talking when the utterance's reply would start
+    await harness.send(session_id, "utterance", text="hmm", channel="voice", start_ms=0, end_ms=1)
+    await harness.speaking(session_id)
+    await harness.wait_for_interviewer(session_id)
+    assert [(t["reason"], t.get("suppressed_by")) for t in _triggers(harness, session_id)] == [
+        ("utterance", "speaking")
+    ]
+
+    harness.model.script("What did you expect that to print?")
+    await harness.elapse(session_id, 2)  # quiet again: the Run still gets its reaction
+    assert _triggers(harness, session_id)[-1] == {
+        "reason": "run",
+        "detail": "failed",
+        "proactive": True,
+        "outcome": "spoke",
+    }
 
 
 async def test_a_typed_message_is_answered_even_while_speech_is_detected(
