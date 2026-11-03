@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   CandidateTest,
+  deleteSession,
+  exportUrl,
   getReport,
   IdealWalkthrough,
   Improvement,
@@ -50,6 +52,16 @@ export function ReportPage({ sessionId }: { sessionId: string }) {
       });
   };
 
+  const remove = () => {
+    if (!window.confirm("Delete this Session with its transcript, code and report? This cannot be undone."))
+      return;
+    deleteSession(sessionId)
+      .then(() => {
+        window.location.hash = "#/history";
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  };
+
   const seek = (tMs: number) => {
     setReplayT(tMs);
     document.getElementById("replay")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
@@ -60,6 +72,24 @@ export function ReportPage({ sessionId }: { sessionId: string }) {
       <p>
         <a href="#/history">History</a> · <a href={`#/sessions/${sessionId}`}>Back to the interview</a>
       </p>
+      {view && view.status !== "live" && view.status !== "generating" && (
+        <p className="session-actions">
+          <a href={exportUrl(sessionId)} download>
+            Export JSONL
+          </a>
+          {view.status === "report_ready" && (
+            <>
+              {" "}
+              <button type="button" onClick={regenerate}>
+                Regenerate report
+              </button>
+            </>
+          )}{" "}
+          <button type="button" onClick={remove}>
+            Delete
+          </button>
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
       {!view ? (
         <p>Loading…</p>

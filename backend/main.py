@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 
 from backend.agent.anthropic_client import AnthropicModelClient
@@ -18,7 +19,7 @@ from backend.clock import Clock, SystemClock
 from backend.config import Config, load_config
 from backend.db import Store
 from backend.feedback.generator import ReportGenerator
-from backend.history import list_history, replay
+from backend.history import delete_session, export_jsonl, list_history, replay
 from backend.runner import Runner
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
@@ -113,6 +114,28 @@ def create_app(
         if data is None:
             raise HTTPException(status_code=404, detail="Session not found")
         return data
+
+    @app.get("/api/sessions/{session_id}/export")
+    def export_session(session_id: str) -> Response:
+        body = export_jsonl(store, session_id)
+        if body is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return Response(
+            content=body,
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": f'attachment; filename="{session_id}.jsonl"'},
+        )
+
+    @app.delete("/api/sessions/{session_id}")
+    def remove_session(session_id: str) -> dict[str, str]:
+        outcome = delete_session(store, session_id, generating=reports.generating(session_id))
+        if outcome == "not_found":
+            raise HTTPException(status_code=404, detail="Session not found")
+        if outcome == "busy":
+            raise HTTPException(
+                status_code=409, detail="The interview or its report is still in progress"
+            )
+        return {"status": "deleted"}
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict[str, Any]:

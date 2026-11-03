@@ -3,7 +3,8 @@ stored events (and the Report, when there is one)."""
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, Literal
 
 from backend.db import Event, Store
 from backend.feedback.metrics import silence_gaps
@@ -70,3 +71,31 @@ def replay(store: Store, session_id: str) -> dict[str, Any] | None:
         "duration_ms": end_ms,
         "markers": markers(events, end_ms),
     }
+
+
+def export_jsonl(store: Store, session_id: str) -> str | None:
+    """The Session as JSONL: a `session` line, one `event` line per stored event (the
+    Interviewer's notes included) and a `report` line when there is a Report."""
+    record = store.get_session(session_id)
+    if record is None:
+        return None
+    lines: list[dict[str, Any]] = [{"kind": "session", **record.to_public_dict()}]
+    lines += [{"kind": "event", **e.to_dict()} for e in store.events(session_id)]
+    report = store.get_report(session_id)
+    if report is not None:
+        lines.append({"kind": "report", **report.to_dict()})
+    return "".join(json.dumps(line) + "\n" for line in lines)
+
+
+def delete_session(
+    store: Store, session_id: str, *, generating: bool
+) -> Literal["deleted", "not_found", "busy"]:
+    """Hard-delete a Session, its events and Report. A live Session, or one whose Report is
+    being generated, is busy and left alone."""
+    record = store.get_session(session_id)
+    if record is None:
+        return "not_found"
+    if record.status == "live" or generating:
+        return "busy"
+    store.delete_session(session_id)
+    return "deleted"

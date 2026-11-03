@@ -1,6 +1,8 @@
 """History and replay seam: the Session list and the replay data, read from stored events."""
 
-from backend.history import list_history, replay
+import json
+
+from backend.history import delete_session, export_jsonl, list_history, replay
 from tests.report_harness import ReportHarness, submit_report
 
 
@@ -67,3 +69,72 @@ async def test_markers_for_runs_hints_phases_and_silence_gaps(reports: ReportHar
 
 async def test_replay_of_an_unknown_session_is_none(reports: ReportHarness) -> None:
     assert replay(reports.store, "ses_nope") is None
+
+
+async def test_export_is_jsonl_of_every_event_plus_the_report(reports: ReportHarness) -> None:
+    log = reports.ended_session()
+    log.event(40, "interviewer_note", observation="private")
+    reports.model.script(submit_report())
+    await reports.generate(log.id)
+
+    text = export_jsonl(reports.store, log.id)
+
+    assert text is not None and text.endswith("\n")
+    lines = [json.loads(line) for line in text.splitlines()]
+    events = [line for line in lines if line["kind"] == "event"]
+    assert len(events) == len(reports.store.events(log.id))
+    assert any(e["type"] == "interviewer_note" for e in events)
+    assert [line["kind"] for line in lines][0] == "session"
+    assert lines[-1]["kind"] == "report"
+    assert lines[-1]["report"]["overall_signal"]["label"]
+
+
+async def test_export_without_a_report_has_no_report_line_and_unknown_is_none(
+    reports: ReportHarness,
+) -> None:
+    log = reports.ended_session()
+    text = export_jsonl(reports.store, log.id)
+    assert text is not None
+    assert "report" not in [json.loads(line)["kind"] for line in text.splitlines()]
+    assert export_jsonl(reports.store, "ses_nope") is None
+
+
+async def test_delete_removes_the_session_its_events_and_its_report(reports: ReportHarness) -> None:
+    keep = reports.ended_session()
+    gone = reports.ended_session()
+    reports.model.script(submit_report())
+    await reports.generate(gone.id)
+
+    assert delete_session(reports.store, gone.id, generating=False) == "deleted"
+
+    assert reports.store.get_session(gone.id) is None
+    assert reports.store.events(gone.id) == []
+    assert reports.store.get_report(gone.id) is None
+    assert [r["id"] for r in list_history(reports.store)] == [keep.id]
+    assert reports.store.events(keep.id)
+    assert delete_session(reports.store, gone.id, generating=False) == "not_found"
+
+
+async def test_a_live_or_generating_session_is_not_deleted(reports: ReportHarness) -> None:
+    live = reports.session()
+    ended = reports.ended_session()
+
+    assert delete_session(reports.store, live.id, generating=False) == "busy"
+    assert delete_session(reports.store, ended.id, generating=True) == "busy"
+    assert reports.store.get_session(live.id) is not None
+    assert reports.store.get_session(ended.id) is not None
+
+
+async def test_regenerating_replaces_the_old_report_from_the_stored_events(
+    reports: ReportHarness,
+) -> None:
+    log = reports.ended_session()
+    reports.model.script(submit_report(summary="First."))
+    await reports.generate(log.id)
+    reports.model.script(submit_report(summary="Second."))
+
+    view = await reports.generate(log.id)
+
+    assert view["status"] == "report_ready"
+    assert view["report"]["summary"] == "Second."
+    assert reports.report(log.id).report["summary"] == "Second."  # type: ignore[union-attr]

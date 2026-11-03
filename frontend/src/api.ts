@@ -231,3 +231,13 @@ export interface ReplayData {
 export function getReplay(id: string): Promise<ReplayData> {
   return request(`/api/sessions/${encodeURIComponent(id)}/replay`);
 }
+
+/** Where the Session downloads as JSONL (all events plus the Report). */
+export function exportUrl(id: string): string {
+  return `/api/sessions/${encodeURIComponent(id)}/export`;
+}
+
+/** Hard-delete a Session, its events and its Report. */
+export function deleteSession(id: string): Promise<{ status: "deleted" }> {
+  return request(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}

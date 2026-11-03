@@ -258,6 +258,14 @@ class Store:
             )
         return record
 
+    def delete_session(self, session_id: str) -> bool:
+        """Hard-delete the Session with its events and Report. False if there is no such Session."""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM reports WHERE session_id = ?", (session_id,))
+            self._conn.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
+            cursor = self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        return cursor.rowcount > 0
+
     def get_report(self, session_id: str) -> ReportRecord | None:
         with self._lock:
             row = self._conn.execute(
