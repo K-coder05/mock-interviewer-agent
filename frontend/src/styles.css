@@ -53,5 +53,12 @@ body { margin: 0; }
 .clarifications { border-top: 1px solid #d0d5dd; margin-top: 1rem; }
 .clarifications h3 { font-size: 0.95rem; }
 .clarifications li { margin-bottom: 0.4rem; }
-.setup select { font: inherit; font-weight: 400; padding: 0.5rem; border: 1px solid #d0d5dd; border-radius: 6px; }
+.setup select, .setup input[type="number"] { font: inherit; font-weight: 400; padding: 0.5rem; border: 1px solid #d0d5dd; border-radius: 6px; }
 .reading { text-align: center; margin-top: 20vh; font-size: 1.2rem; }
+.setup input[type="number"] { width: 8rem; }
+.timer { margin-left: auto; font: 600 1.1rem ui-monospace, Menlo, monospace; }
+.timer.warning, .timer.time_up { color: #b42318; }
+.timer-note { color: #b42318; font-size: 0.9rem; }
+.end-button { padding: 0.4rem 1rem; font: inherit; font-weight: 600; border: 1px solid #b42318; border-radius: 6px; background: white; color: #b42318; cursor: pointer; }
+.end-button:disabled { opacity: 0.5; cursor: default; }
+.ended-note { padding: 0.6rem 1rem; border-top: 1px solid #d0d5dd; color: #667085; }

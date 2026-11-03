@@ -3,7 +3,8 @@
 export type ClientMessage =
   | { type: "code_update"; code: string }
   | { type: "run"; code: string; stdin: string }
-  | { type: "utterance"; text: string; channel: "text" };
+  | { type: "utterance"; text: string; channel: "text" }
+  | { type: "end_session" };
 
 export interface RunResult {
   snapshot_seq: number;
@@ -22,7 +23,11 @@ export interface Clarification {
   by: "interviewer" | "candidate";
 }
 
+export type TimerState = "running" | "warning" | "time_up" | "ended";
+
 export type ServerMessage =
+  | { type: "timer"; state: TimerState; remaining_ms: number; duration_ms: number }
+  | { type: "session_ended"; reason: "user" | "timeout" }
   | { type: "error"; code: string; message: string }
   | { type: "interviewer_delta"; msg_id: string; text: string }
   | { type: "interviewer_done"; msg_id: string; full_text: string }

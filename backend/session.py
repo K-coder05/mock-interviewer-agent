@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import difflib
 import logging
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -31,12 +32,16 @@ Speaker = Literal["user", "interviewer"]
 ServerMessage = dict[str, Any]
 Listener = Callable[[ServerMessage], Awaitable[None]]
 
+CLOSING_TIMEOUT_S = 30
+WARNING_MS = 5 * 60_000  # the timer turns red with this much time left
+
 __all__ = ["LiveSession", "ServerMessage", "SessionDefaults", "SessionManager", "Style"]
 
 
 @dataclass(frozen=True)
 class SessionDefaults:
     duration_min: int
+    timeout_grace_s: int
     models: ModelIds
 
 
@@ -68,6 +73,7 @@ class LiveSession:
         clock: Clock,
         runner: Runner,
         model: ModelClient,
+        timer_poll_s: float | None = 1.0,
     ) -> None:
         self.record = record
         self._store = store
@@ -92,6 +98,14 @@ class LiveSession:
         self._reply_task: asyncio.Task[None] | None = None
         self._reply_trigger: Trigger | None = None
         self._listeners: list[Listener] = []
+        self._duration_ms = int(record.settings["duration_min"]) * 60_000
+        self._grace_ms = int(record.settings["timeout_grace_s"]) * 1000
+        self._timer_poll_s = timer_poll_s
+        self._timer_started_ms: int | None = None  # clock reading when the greeting began
+        self._timer_task: asyncio.Task[None] | None = None
+        self._warned = False
+        self._time_up = False
+        self._ending = False
 
     @property
     def id(self) -> str:
@@ -128,11 +142,18 @@ class LiveSession:
         if not self._greeted:
             self._greeted = True
             self._request_reply("session_start")
+        elif self._timer_started_ms is not None or self._ending:
+            # a reconnecting client needs the current timer state
+            asyncio.create_task(self._emit_timer(self._timer_state()))
 
     async def handle(self, message: dict[str, Any]) -> None:
         """Process one client message (the WebSocket payload)."""
         kind = message.get("type")
-        if kind == "code_update":
+        if kind == "end_session":
+            await self.end("user")
+        elif self._ending:
+            await self._emit_error("session_ended", "The interview has ended")
+        elif kind == "code_update":
             await self._on_code_update(message)
         elif kind == "run":
             await self._on_run(message)
@@ -140,6 +161,98 @@ class LiveSession:
             await self._on_utterance(message)
         else:
             await self._emit_error("unknown_message", f"Unknown message type: {kind!r}")
+
+    async def tick(self) -> None:
+        """Advance the timer: emit the 5-minute warning, prompt for a last thought at 0:00 and
+        auto-end once the grace has passed. Called by the polling loop (and by tests)."""
+        if self._timer_started_ms is None or self._ending:
+            return
+        remaining = self._remaining_ms()
+        if remaining <= WARNING_MS and not self._warned:
+            self._warned = True
+            self._append("timer_warning", {"remaining_ms": remaining})
+            await self._emit_timer("warning")
+        if remaining <= 0 and not self._time_up and remaining > -self._grace_ms:
+            self._time_up = True
+            self._append("time_up", {})
+            await self._emit_timer("time_up")
+            self._request_reply("time_up")
+        if remaining <= -self._grace_ms:
+            await self.end("timeout")
+
+    async def end(self, reason: Literal["user", "timeout"]) -> None:
+        """End the Session: the Interviewer closes politely (no verdict), then `session_ended`
+        is logged with the final code and the status becomes `ended`. Idempotent."""
+        if self._ending:
+            return
+        self._ending = True
+        final_code = self._code
+        if self._run_task is not None and not self._run_task.done():
+            self._run_task.cancel()
+            await asyncio.gather(self._run_task, return_exceptions=True)
+        if self._greeted:  # nothing to close if the interview never began
+            self._request_reply("session_end")
+            try:  # a hung model call must not keep the Session from ending
+                await asyncio.wait_for(self.wait_for_interviewer(), CLOSING_TIMEOUT_S)
+            except TimeoutError:
+                logger.warning("closing reply timed out for Session %s", self.id)
+                if self._reply_task is not None:
+                    self._reply_task.cancel()
+        self._append("session_ended", {"reason": reason, "final_code": final_code})
+        self._store.end_session(self.id)
+        if (record := self._store.get_session(self.id)) is not None:
+            self.record = record
+        await self._emit_timer("ended")
+        await self._emit({"type": "session_ended", "reason": reason})
+
+    async def close(self) -> None:
+        """Stop background tasks (timer loop, in-flight Run and reply)."""
+        tasks = [self._timer_task, self._run_task, self._reply_task]
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*[t for t in tasks if t is not None], return_exceptions=True)
+
+    def _remaining_ms(self) -> int:
+        assert self._timer_started_ms is not None
+        elapsed = self._clock.monotonic_ms() - self._timer_started_ms
+        return self._duration_ms - elapsed
+
+    def _timer_state(self) -> Literal["running", "warning", "time_up", "ended"]:
+        if self._ending:
+            return "ended"
+        return "time_up" if self._time_up else "warning" if self._warned else "running"
+
+    async def _emit_timer(self, state: Literal["running", "warning", "time_up", "ended"]) -> None:
+        remaining = 0 if state == "ended" else max(0, self._remaining_ms())
+        await self._emit(
+            {
+                "type": "timer",
+                "state": state,
+                "remaining_ms": remaining,
+                "duration_ms": self._duration_ms,
+            }
+        )
+
+    async def _start_timer(self) -> None:
+        """The countdown starts when the Interviewer's greeting begins streaming."""
+        if self._timer_started_ms is not None or self._ending:
+            return
+        self._timer_started_ms = self._clock.monotonic_ms()
+        self._append("timer_started", {"duration_ms": self._duration_ms})
+        await self._emit_timer("running")
+        if self._timer_poll_s is not None:
+            self._timer_task = asyncio.create_task(self._poll_timer(self._timer_poll_s))
+
+    async def _poll_timer(self, interval_s: float) -> None:
+        while not self._ending:
+            await asyncio.sleep(interval_s)
+            try:
+                await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Timer tick failed for Session %s", self.id)
 
     async def wait_for_run(self) -> None:
         """Wait for the in-flight Run (if any) to finish; used by tests and shutdown."""
@@ -223,14 +336,22 @@ class LiveSession:
         async def on_text(text: str) -> None:
             nonlocal streamed
             streamed = True
+            if trigger == "session_start":
+                await self._start_timer()
             await self._emit({"type": "interviewer_delta", "msg_id": msg_id, "text": text})
 
         start = self._now_ms()
         try:
             decision = await self._interviewer.decide(
-                self._store.events(self.id), now_ms=start, trigger=trigger, on_text=on_text
+                self._store.events(self.id),
+                now_ms=start,
+                remaining_ms=None if self._timer_started_ms is None else self._remaining_ms(),
+                trigger=trigger,
+                on_text=on_text,
             )
         except BaseException:
+            if trigger == "session_start" and not isinstance(sys.exc_info()[1], asyncio.CancelledError):
+                await self._start_timer()  # a failed greeting must not leave the interview untimed
             if streamed:
                 await self._emit({"type": "interviewer_cancel", "msg_id": msg_id})
             raise
@@ -323,12 +444,14 @@ class SessionManager:
         runner: Runner,
         model: ModelClient,
         defaults: SessionDefaults,
+        timer_poll_s: float | None = 1.0,
     ) -> None:
         self._store = store
         self._clock = clock
         self._runner = runner
         self._model = model
         self._defaults = defaults
+        self._timer_poll_s = timer_poll_s
         self._live: dict[str, LiveSession] = {}
 
     async def create(
@@ -338,6 +461,7 @@ class SessionManager:
         starter_code: str | None = None,
         private_notes: str | None = None,
         style: Style,
+        duration_min: int | None = None,
     ) -> LiveSession:
         """Run problem prep, then persist and start the Session.
 
@@ -353,7 +477,8 @@ class SessionManager:
             private_notes=notes,
         )
         settings: dict[str, Any] = {
-            "duration_min": self._defaults.duration_min,
+            "duration_min": duration_min or self._defaults.duration_min,
+            "timeout_grace_s": self._defaults.timeout_grace_s,
             "autocomplete": False,
             "style": style.to_settings(),
             "models": dataclasses.asdict(self._defaults.models),
@@ -367,7 +492,12 @@ class SessionManager:
             problem_brief=brief,
         )
         live = LiveSession(
-            record, store=self._store, clock=self._clock, runner=self._runner, model=self._model
+            record,
+            store=self._store,
+            clock=self._clock,
+            runner=self._runner,
+            model=self._model,
+            timer_poll_s=self._timer_poll_s,
         )
         live.begin()
         self._live[record.id] = live
@@ -375,3 +505,7 @@ class SessionManager:
 
     def live(self, session_id: str) -> LiveSession | None:
         return self._live.get(session_id)
+
+    async def close(self) -> None:
+        for live in self._live.values():
+            await live.close()

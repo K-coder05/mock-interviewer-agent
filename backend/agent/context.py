@@ -95,7 +95,9 @@ def _clip(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[:limit] + f"\n[... {len(text) - limit} more chars]"
 
 
-def build_turn_message(events: Sequence[Event], *, now_ms: int, trigger: str) -> str:
+def build_turn_message(
+    events: Sequence[Event], *, now_ms: int, trigger: str, remaining_ms: int | None = None
+) -> str:
     """The single user message for a decision call, derived only from the event log."""
     clarifications: list[str] = []
     transcript: list[str] = []
@@ -125,6 +127,7 @@ def build_turn_message(events: Sequence[Event], *, now_ms: int, trigger: str) ->
     return "\n\n".join(
         [
             f"<elapsed>{_clock(now_ms)}</elapsed>",
+            *([] if remaining_ms is None else [f"<time_left>{_clock(max(0, remaining_ms))}</time_left>"]),
             "<clarifications>\n" + ("\n".join(clarifications) or "(none yet)") + "\n</clarifications>",
             "<transcript>\n" + ("\n".join(transcript) or "(nothing said yet)") + "\n</transcript>",
             "<current_code>\n" + (numbered or "(empty)") + "\n</current_code>",

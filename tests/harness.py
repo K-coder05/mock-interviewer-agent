@@ -110,7 +110,8 @@ class LiveSessionHarness:
             clock=self.clock,
             runner=runner or Runner(RunnerConfig(timeout_s=5)),
             model=self.model,
-            defaults=SessionDefaults(duration_min=45, models=DEFAULT_MODELS),
+            defaults=SessionDefaults(duration_min=45, timeout_grace_s=60, models=DEFAULT_MODELS),
+            timer_poll_s=None,  # tests drive the timer with `elapse` instead of a polling loop
         )
         self.sent: dict[str, list[ServerMessage]] = {}
 
@@ -125,6 +126,7 @@ class LiveSessionHarness:
         private_notes: str | None = None,
         style: Style | None = None,
         brief: ProblemBrief | None = DEFAULT_BRIEF,
+        duration_min: int | None = None,
     ) -> str:
         """Run problem prep, create a Session and capture every server message it emits.
 
@@ -139,6 +141,7 @@ class LiveSessionHarness:
             starter_code=starter_code,
             private_notes=private_notes,
             style=style or Style(preset="faang_standard"),
+            duration_min=duration_min,
         )
         messages = self.sent.setdefault(live.id, [])
 
@@ -152,6 +155,8 @@ class LiveSessionHarness:
         live = self.manager.live(session_id)
         assert live is not None, f"no live Session {session_id}"
         await live.handle({"type": type, **payload})
+        if type == "end_session":
+            await live.wait_for_interviewer()
 
     async def connect(self, session_id: str) -> None:
         """A client connected (as the WebSocket does); the first one triggers the greeting."""
@@ -175,6 +180,15 @@ class LiveSessionHarness:
 
     def advance(self, seconds: float) -> None:
         self.clock.advance(seconds)
+
+    async def elapse(self, session_id: str, seconds: float) -> None:
+        """Move the clock forward, let the Session's timer react, and wait for any Interviewer
+        reply (time-up prompt, closing) it caused."""
+        self.clock.advance(seconds)
+        live = self.manager.live(session_id)
+        assert live is not None
+        await live.tick()
+        await live.wait_for_interviewer()
 
     def session(self, session_id: str) -> SessionRecord:
         record = self.store.get_session(session_id)

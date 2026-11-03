@@ -22,7 +22,9 @@ DECISION_MAX_TOKENS = 1024
 
 ClarifiedBy = Literal["interviewer", "candidate"]
 # Why the Interviewer is asked to respond. Later tickets add silence, run, stuck, time...
-Trigger = Literal["session_start", "typed_message", "typed_message_unanswered"]
+Trigger = Literal[
+    "session_start", "typed_message", "typed_message_unanswered", "time_up", "session_end"
+]
 
 RECORD_CLARIFICATION: dict[str, Any] = {
     "name": "record_clarification",
@@ -83,6 +85,7 @@ class Interviewer:
         events: Sequence[Event],
         *,
         now_ms: int,
+        remaining_ms: int | None = None,
         trigger: Trigger,
         on_text: Callable[[str], Awaitable[None]],
     ) -> Decision:
@@ -92,7 +95,9 @@ class Interviewer:
             model=self._model_id,
             system=self._system,
             messages=[
-                {"role": "user", "content": build_turn_message(events, now_ms=now_ms, trigger=trigger)}
+                {"role": "user", "content": build_turn_message(
+                        events, now_ms=now_ms, remaining_ms=remaining_ms, trigger=trigger
+                    )}
             ],
             tools=TOOLS,
             max_tokens=DECISION_MAX_TOKENS,

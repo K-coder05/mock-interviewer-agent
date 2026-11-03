@@ -10,9 +10,10 @@ export interface TranscriptEntry {
 interface Props {
   entries: TranscriptEntry[];
   onSend: (text: string) => void;
+  disabled?: boolean;
 }
 
-export function Conversation({ entries, onSend }: Props) {
+export function Conversation({ entries, onSend, disabled = false }: Props) {
   const [draft, setDraft] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -43,6 +44,7 @@ export function Conversation({ entries, onSend }: Props) {
       <form className="composer" onSubmit={send}>
         <textarea
           rows={2}
+          disabled={disabled}
           value={draft}
           placeholder="Type to the Interviewer (Enter to send)"
           onChange={(e) => setDraft(e.target.value)}
@@ -50,7 +52,7 @@ export function Conversation({ entries, onSend }: Props) {
             if (e.key === "Enter" && !e.shiftKey) send(e);
           }}
         />
-        <button type="submit" disabled={!draft.trim()}>
+        <button type="submit" disabled={disabled || !draft.trim()}>
           Send
         </button>
       </form>

@@ -5,6 +5,7 @@ import { CodeSync } from "../codeSync";
 import { CodeEditor } from "../components/CodeEditor";
 import { Console } from "../components/Console";
 import { Conversation, TranscriptEntry } from "../components/Conversation";
+import { Timer, TimerSnapshot } from "../components/Timer";
 import { Clarification, RunResult, SessionSocket } from "../ws";
 
 function transcriptFrom(events: SessionEvent[]): TranscriptEntry[] {
@@ -31,6 +32,8 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
   const [stdin, setStdin] = useState("");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
+  const [timer, setTimer] = useState<TimerSnapshot | null>(null);
+  const [ended, setEnded] = useState(false);
   const stdinRef = useRef("");
   stdinRef.current = stdin;
   const bufferRef = useRef("");
@@ -44,6 +47,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         if (cancelled) return;
         setTranscript(transcriptFrom(events));
         setClarifications(clarificationsFrom(events));
+        setEnded(session.status !== "live");
         setSession(session);
       })
       .catch((err) => !cancelled && setError(err instanceof Error ? err.message : String(err)));
@@ -93,6 +97,14 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         });
       } else if (message.type === "interviewer_cancel") {
         setTranscript((entries) => entries.filter((e) => e.key !== message.msg_id));
+      } else if (message.type === "timer") {
+        setTimer({
+          state: message.state,
+          remainingMs: message.remaining_ms,
+          receivedAt: performance.now(),
+        });
+      } else if (message.type === "session_ended") {
+        setEnded(true);
       } else if (message.type === "clarification") {
         const { question, answer, by } = message;
         setClarifications((list) => [...list, { question, answer, by }]);
@@ -133,6 +145,12 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     ]);
   };
 
+  const endInterview = () => {
+    if (!window.confirm("End the interview now?")) return;
+    syncRef.current?.flush();
+    socketRef.current?.send({ type: "end_session" });
+  };
+
   if (!session) {
     return <main className="loading">{error ?? "Loading…"}</main>;
   }
@@ -142,6 +160,10 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       <header className="topbar">
         <strong>{session.title}</strong>
         {error && <span className="error">{error}</span>}
+        <Timer timer={ended ? { state: "ended", remainingMs: 0, receivedAt: 0 } : timer} />
+        <button type="button" className="end-button" disabled={ended} onClick={endInterview}>
+          End Interview
+        </button>
       </header>
       <section className="pane problem">
         <ReactMarkdown>{session.problem_md}</ReactMarkdown>
@@ -180,7 +202,8 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         />
       </section>
       <section className="pane conversation">
-        <Conversation entries={transcript} onSend={say} />
+        <Conversation entries={transcript} onSend={say} disabled={ended} />
+        {ended && <p className="ended-note">The interview has ended.</p>}
       </section>
     </div>
   );

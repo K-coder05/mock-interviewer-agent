@@ -184,6 +184,16 @@ class Store:
             status=row["status"],
         )
 
+    def end_session(self, session_id: str) -> str:
+        """Mark the Session ended now; returns the `ended_at` timestamp."""
+        ended_at = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sessions SET status = 'ended', ended_at = ? WHERE id = ?",
+                (ended_at, session_id),
+            )
+        return ended_at
+
     def append_event(
         self, session_id: str, *, t_ms: int, type: str, payload: dict[str, Any]
     ) -> Event:

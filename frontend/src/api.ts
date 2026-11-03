@@ -38,6 +38,7 @@ export interface CreateSessionInput {
   starter_code?: string;
   private_notes?: string;
   style: StyleSetting;
+  duration_min: number;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

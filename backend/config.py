@@ -37,6 +37,7 @@ class Config:
     api_key: str
     models: ModelIds
     default_duration_min: int
+    timeout_grace_s: int
     db_path: Path
     runner: RunnerConfig
     raw: dict[str, Any]
@@ -67,6 +68,7 @@ def load_config(
             prep=models["prep"], interviewer=models["interviewer"], report=models["report"]
         ),
         default_duration_min=int(raw.get("interview", {}).get("default_duration_min", 45)),
+        timeout_grace_s=int(raw.get("interview", {}).get("timeout_grace_s", 60)),
         db_path=db_path if db_path.is_absolute() else ROOT / db_path,
         runner=RunnerConfig(
             python=str(runner_raw.get("python", "python3")),

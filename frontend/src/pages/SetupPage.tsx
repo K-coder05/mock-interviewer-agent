@@ -10,12 +10,17 @@ export function SetupPage() {
   const [privateNotes, setPrivateNotes] = useState("");
   const [stylePick, setStylePick] = useState(STYLE_PRESETS[0].id);
   const [customStyle, setCustomStyle] = useState("");
+  const [durationMin, setDurationMin] = useState(45);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const style: StyleSetting =
     stylePick === CUSTOM ? { custom: customStyle.trim() } : { preset: stylePick };
-  const ready = problem.trim() !== "" && (stylePick !== CUSTOM || customStyle.trim() !== "");
+  const ready =
+    Number.isInteger(durationMin) &&
+    durationMin >= 5 &&
+    durationMin <= 180 &&
+    problem.trim() !== "" && (stylePick !== CUSTOM || customStyle.trim() !== "");
 
   async function start(event: FormEvent) {
     event.preventDefault();
@@ -27,6 +32,7 @@ export function SetupPage() {
         starter_code: starterCode.trim() ? starterCode : undefined,
         private_notes: privateNotes.trim() ? privateNotes : undefined,
         style,
+        duration_min: durationMin,
       });
       navigate(`/sessions/${session_id}`);
     } catch (err) {
@@ -100,8 +106,18 @@ export function SetupPage() {
             />
           </label>
         )}
+        <label>
+          Duration (minutes)
+          <input
+            type="number"
+            min={5}
+            max={180}
+            value={durationMin}
+            onChange={(e) => setDurationMin(Number(e.target.value))}
+          />
+        </label>
         <p className="hint">
-          Headphones recommended. Python 3, standard library only. Style changes only the
+          The timer starts when the Interviewer begins greeting you. Headphones recommended. Python 3, standard library only. Style changes only the
           Interviewer's persona, never how you're scored.
         </p>
         {error && <p className="error">Could not start the Session: {error}</p>}

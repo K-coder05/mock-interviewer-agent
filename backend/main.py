@@ -43,6 +43,7 @@ class CreateSessionRequest(BaseModel):
     starter_code: str | None = None
     private_notes: str | None = None
     style: StyleInput = StyleInput(preset="faang_standard")
+    duration_min: int | None = Field(default=None, ge=5, le=180)
 
 
 class CreateSessionResponse(BaseModel):
@@ -61,6 +62,7 @@ def create_app(
         model=model or AnthropicModelClient(config.api_key),
         defaults=SessionDefaults(
             duration_min=config.default_duration_min,
+            timeout_grace_s=config.timeout_grace_s,
             models=config.models,
         ),
     )
@@ -68,6 +70,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        await manager.close()
         store.close()
 
     app = FastAPI(title="Mock Interviewer", lifespan=lifespan)
@@ -82,6 +85,7 @@ def create_app(
                 starter_code=body.starter_code,
                 private_notes=body.private_notes,
                 style=Style(preset=body.style.preset, custom=body.style.custom),
+                duration_min=body.duration_min,
             )
         except PrepFailed as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
