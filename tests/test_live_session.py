@@ -7,7 +7,7 @@ from tests.harness import LiveSessionHarness
 async def test_creating_a_session_persists_it_live_and_emits_session_started(
     harness: LiveSessionHarness,
 ) -> None:
-    session_id = harness.start(problem_md="# Two Sum\n\nFind two numbers.")
+    session_id = await harness.start(problem_md="# Two Sum\n\nFind two numbers.")
 
     session = harness.session(session_id)
     assert session.status == "live"
@@ -23,7 +23,7 @@ async def test_creating_a_session_persists_it_live_and_emits_session_started(
 async def test_starter_code_is_the_first_code_snapshot_at_t0(harness: LiveSessionHarness) -> None:
     harness.advance(5)  # wall time before creation must not leak into t_ms
     harness.clock.tick_per_read_ms = 7  # nor may time spent while creating the Session
-    session_id = harness.start(starter_code="def two_sum(nums, target):\n    pass\n")
+    session_id = await harness.start(starter_code="def two_sum(nums, target):\n    pass\n")
 
     events = harness.events(session_id)
     assert [e.type for e in events] == ["session_started", "code_snapshot"]
@@ -34,7 +34,7 @@ async def test_starter_code_is_the_first_code_snapshot_at_t0(harness: LiveSessio
 
 
 async def test_no_starter_code_means_no_initial_snapshot(harness: LiveSessionHarness) -> None:
-    session_id = harness.start(starter_code="")
+    session_id = await harness.start(starter_code="")
 
     assert harness.events(session_id, "code_snapshot") == []
 
@@ -42,7 +42,7 @@ async def test_no_starter_code_means_no_initial_snapshot(harness: LiveSessionHar
 async def test_code_updates_record_each_distinct_buffer_with_server_seq_and_t_ms(
     harness: LiveSessionHarness,
 ) -> None:
-    session_id = harness.start(starter_code="def f():\n    pass\n")
+    session_id = await harness.start(starter_code="def f():\n    pass\n")
 
     harness.advance(12.5)
     await harness.send(session_id, "code_update", code="def f():\n    return 1\n")
@@ -66,7 +66,7 @@ async def test_code_updates_record_each_distinct_buffer_with_server_seq_and_t_ms
 
 
 async def test_resending_the_starter_code_produces_no_snapshot(harness: LiveSessionHarness) -> None:
-    session_id = harness.start(starter_code="x = 1\n")
+    session_id = await harness.start(starter_code="x = 1\n")
 
     harness.advance(3)
     await harness.send(session_id, "code_update", code="x = 1\n")
@@ -75,7 +75,7 @@ async def test_resending_the_starter_code_produces_no_snapshot(harness: LiveSess
 
 
 async def test_unknown_messages_get_an_error_and_no_event(harness: LiveSessionHarness) -> None:
-    session_id = harness.start()
+    session_id = await harness.start()
 
     await harness.send(session_id, "teleport")
 
@@ -86,7 +86,7 @@ async def test_unknown_messages_get_an_error_and_no_event(harness: LiveSessionHa
 async def test_run_forces_a_snapshot_and_the_run_event_references_its_seq(
     harness: LiveSessionHarness,
 ) -> None:
-    session_id = harness.start(starter_code="print('old')\n")
+    session_id = await harness.start(starter_code="print('old')\n")
 
     harness.advance(3)
     await harness.send(session_id, "run", code="print('new')\n", stdin="")
@@ -108,7 +108,7 @@ async def test_run_forces_a_snapshot_and_the_run_event_references_its_seq(
 async def test_run_of_an_unchanged_buffer_reuses_the_latest_snapshot(
     harness: LiveSessionHarness,
 ) -> None:
-    session_id = harness.start(starter_code="print(1)\n")
+    session_id = await harness.start(starter_code="print(1)\n")
 
     await harness.send(session_id, "run", code="print(1)\n")
     await harness.finish_run(session_id)
@@ -119,7 +119,7 @@ async def test_run_of_an_unchanged_buffer_reuses_the_latest_snapshot(
 
 
 async def test_run_passes_stdin_through(harness: LiveSessionHarness) -> None:
-    session_id = harness.start()
+    session_id = await harness.start()
 
     await harness.send(session_id, "run", code="print(input().upper())\n", stdin="abc\n")
     await harness.finish_run(session_id)
@@ -132,7 +132,7 @@ async def test_run_passes_stdin_through(harness: LiveSessionHarness) -> None:
 async def test_a_second_run_cancels_the_first_and_only_the_second_is_recorded(
     harness: LiveSessionHarness,
 ) -> None:
-    session_id = harness.start()
+    session_id = await harness.start()
 
     await harness.send(session_id, "run", code="import time\ntime.sleep(60)\n")
     await harness.send(session_id, "run", code="print('second')\n")
@@ -148,7 +148,7 @@ async def test_a_second_run_cancels_the_first_and_only_the_second_is_recorded(
 
 
 async def test_run_requires_a_string_buffer(harness: LiveSessionHarness) -> None:
-    session_id = harness.start()
+    session_id = await harness.start()
 
     await harness.send(session_id, "run", code=5)
 

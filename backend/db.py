@@ -61,6 +61,7 @@ class SessionRecord:
     starter_code: str | None
     private_notes: str | None
     settings: dict[str, Any]
+    problem_brief: dict[str, Any] | None
     status: SessionStatus
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -118,6 +119,7 @@ class Store:
         starter_code: str | None,
         private_notes: str | None,
         settings: dict[str, Any],
+        problem_brief: dict[str, Any] | None,
     ) -> SessionRecord:
         record = SessionRecord(
             id=new_id("ses"),
@@ -128,12 +130,14 @@ class Store:
             starter_code=starter_code,
             private_notes=private_notes,
             settings=settings,
+            problem_brief=problem_brief,
             status="live",
         )
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO sessions (id, created_at, ended_at, title, problem_md, starter_code,"
-                " private_notes, settings_json, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " private_notes, settings_json, problem_brief_json, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.id,
                     record.created_at,
@@ -143,6 +147,7 @@ class Store:
                     record.starter_code,
                     record.private_notes,
                     json.dumps(record.settings),
+                    None if problem_brief is None else json.dumps(problem_brief),
                     record.status,
                 ),
             )
@@ -153,8 +158,19 @@ class Store:
             row = self._conn.execute(
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             ).fetchone()
-        if row is None:
-            return None
+        return None if row is None else self._record(row)
+
+    def list_sessions(self) -> list[SessionRecord]:
+        """All Sessions, newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM sessions ORDER BY created_at DESC"
+            ).fetchall()
+        return [self._record(r) for r in rows]
+
+    @staticmethod
+    def _record(row: sqlite3.Row) -> SessionRecord:
+        brief = row["problem_brief_json"]
         return SessionRecord(
             id=row["id"],
             created_at=row["created_at"],
@@ -164,6 +180,7 @@ class Store:
             starter_code=row["starter_code"],
             private_notes=row["private_notes"],
             settings=json.loads(row["settings_json"]),
+            problem_brief=None if brief is None else json.loads(brief),
             status=row["status"],
         )
 

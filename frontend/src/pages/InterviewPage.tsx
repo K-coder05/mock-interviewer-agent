@@ -1,10 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { getSession, SessionInfo } from "../api";
+import { getSession, SessionEvent, SessionInfo } from "../api";
 import { CodeSync } from "../codeSync";
 import { CodeEditor } from "../components/CodeEditor";
 import { Console } from "../components/Console";
-import { RunResult, SessionSocket } from "../ws";
+import { Conversation, TranscriptEntry } from "../components/Conversation";
+import { Clarification, RunResult, SessionSocket } from "../ws";
+
+function transcriptFrom(events: SessionEvent[]): TranscriptEntry[] {
+  return events
+    .filter((e) => e.type === "utterance")
+    .map((e) => ({
+      key: e.id,
+      speaker: e.payload.speaker === "interviewer" ? "interviewer" : "user",
+      text: String(e.payload.text),
+    }));
+}
+
+function clarificationsFrom(events: SessionEvent[]): Clarification[] {
+  return events
+    .filter((e) => e.type === "clarification")
+    .map((e) => e.payload as unknown as Clarification);
+}
 
 export function InterviewPage({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -12,6 +29,8 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
   const [stdin, setStdin] = useState("");
+  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const stdinRef = useRef("");
   stdinRef.current = stdin;
   const bufferRef = useRef("");
@@ -21,7 +40,12 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     let cancelled = false;
     getSession(sessionId)
-      .then(({ session }) => !cancelled && setSession(session))
+      .then(({ session, events }) => {
+        if (cancelled) return;
+        setTranscript(transcriptFrom(events));
+        setClarifications(clarificationsFrom(events));
+        setSession(session);
+      })
       .catch((err) => !cancelled && setError(err instanceof Error ? err.message : String(err)));
     return () => {
       cancelled = true;
@@ -41,6 +65,37 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       } else if (message.type === "run_result") {
         setRunning(false);
         setResult(message);
+      } else if (message.type === "interviewer_delta") {
+        setTranscript((entries) => {
+          const last = entries[entries.length - 1];
+          if (last?.key === message.msg_id) {
+            return [...entries.slice(0, -1), { ...last, text: last.text + message.text }];
+          }
+          const entry: TranscriptEntry = {
+            key: message.msg_id,
+            speaker: "interviewer",
+            text: message.text,
+            streaming: true,
+          };
+          return [...entries, entry];
+        });
+      } else if (message.type === "interviewer_done") {
+        setTranscript((entries) => {
+          const done: TranscriptEntry = {
+            key: message.msg_id,
+            speaker: "interviewer",
+            text: message.full_text,
+          };
+          const index = entries.findIndex((e) => e.key === message.msg_id);
+          return index < 0
+            ? [...entries, done]
+            : [...entries.slice(0, index), done, ...entries.slice(index + 1)];
+        });
+      } else if (message.type === "interviewer_cancel") {
+        setTranscript((entries) => entries.filter((e) => e.key !== message.msg_id));
+      } else if (message.type === "clarification") {
+        const { question, answer, by } = message;
+        setClarifications((list) => [...list, { question, answer, by }]);
       }
     });
     socketRef.current = socket;
@@ -68,6 +123,16 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     socketRef.current?.send({ type: "run", code, stdin: stdinRef.current });
   };
 
+  // Flush the buffer first so the reply sees the code as it is now.
+  const say = (text: string) => {
+    syncRef.current?.flush();
+    socketRef.current?.send({ type: "utterance", text, channel: "text" });
+    setTranscript((entries) => [
+      ...entries,
+      { key: `local-${Date.now()}-${entries.length}`, speaker: "user", text },
+    ]);
+  };
+
   if (!session) {
     return <main className="loading">{error ?? "Loading…"}</main>;
   }
@@ -80,6 +145,19 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       </header>
       <section className="pane problem">
         <ReactMarkdown>{session.problem_md}</ReactMarkdown>
+        {clarifications.length > 0 && (
+          <div className="clarifications">
+            <h3>Clarifications</h3>
+            <ul>
+              {clarifications.map((c, i) => (
+                <li key={i}>
+                  <strong>{c.question}</strong> {c.answer}
+                  {c.by === "candidate" && <span className="hint"> (your assumption)</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
       <section className="pane editor">
         <div className="editor-box">
@@ -102,7 +180,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         />
       </section>
       <section className="pane conversation">
-        <p className="hint">The Interviewer will appear here.</p>
+        <Conversation entries={transcript} onSend={say} />
       </section>
     </div>
   );

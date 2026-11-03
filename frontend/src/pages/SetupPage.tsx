@@ -1,12 +1,21 @@
 import { FormEvent, useState } from "react";
-import { createSession } from "../api";
+import { createSession, STYLE_PRESETS, StyleSetting } from "../api";
 import { navigate } from "../App";
+
+const CUSTOM = "custom";
 
 export function SetupPage() {
   const [problem, setProblem] = useState("");
   const [starterCode, setStarterCode] = useState("");
+  const [privateNotes, setPrivateNotes] = useState("");
+  const [stylePick, setStylePick] = useState(STYLE_PRESETS[0].id);
+  const [customStyle, setCustomStyle] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const style: StyleSetting =
+    stylePick === CUSTOM ? { custom: customStyle.trim() } : { preset: stylePick };
+  const ready = problem.trim() !== "" && (stylePick !== CUSTOM || customStyle.trim() !== "");
 
   async function start(event: FormEvent) {
     event.preventDefault();
@@ -16,12 +25,24 @@ export function SetupPage() {
       const { session_id } = await createSession({
         problem_md: problem,
         starter_code: starterCode.trim() ? starterCode : undefined,
+        private_notes: privateNotes.trim() ? privateNotes : undefined,
+        style,
       });
       navigate(`/sessions/${session_id}`);
     } catch (err) {
+      // Back to the form with every input intact; no Session was created.
       setError(err instanceof Error ? err.message : String(err));
       setStarting(false);
     }
+  }
+
+  if (starting) {
+    return (
+      <main className="loading reading">
+        <p>Interviewer is reading the problem…</p>
+        <p className="hint">This can take up to a minute.</p>
+      </main>
+    );
   }
 
   return (
@@ -48,12 +69,44 @@ export function SetupPage() {
             placeholder="def two_sum(nums: list[int], target: int) -> list[int]:"
           />
         </label>
+        <label>
+          Private notes for the Interviewer (optional, hidden from you during the Session)
+          <textarea
+            rows={3}
+            value={privateNotes}
+            onChange={(e) => setPrivateNotes(e.target.value)}
+            placeholder="e.g. The intended solution is O(n) with a hash map."
+          />
+        </label>
+        <label>
+          Interviewer style
+          <select value={stylePick} onChange={(e) => setStylePick(e.target.value)}>
+            {STYLE_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+            <option value={CUSTOM}>Describe your own…</option>
+          </select>
+        </label>
+        {stylePick === CUSTOM && (
+          <label>
+            Describe the interviewer
+            <textarea
+              rows={2}
+              value={customStyle}
+              onChange={(e) => setCustomStyle(e.target.value)}
+              placeholder="e.g. A terse staff engineer who probes trade-offs hard."
+            />
+          </label>
+        )}
         <p className="hint">
-          Headphones recommended. Python 3, standard library only.
+          Headphones recommended. Python 3, standard library only. Style changes only the
+          Interviewer's persona, never how you're scored.
         </p>
         {error && <p className="error">Could not start the Session: {error}</p>}
-        <button type="submit" disabled={starting || !problem.trim()}>
-          {starting ? "Starting…" : "Start"}
+        <button type="submit" disabled={!ready}>
+          Start
         </button>
       </form>
     </main>

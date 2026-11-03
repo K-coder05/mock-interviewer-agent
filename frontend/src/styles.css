@@ -39,4 +39,19 @@ body { margin: 0; }
 .output { flex: 1; overflow: auto; padding: 0.5rem; }
 .output pre { margin: 0; font: 13px ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 .output .stderr { color: #f87171; }
-.conversation { padding: 1rem; border-left: 1px solid #d0d5dd; background: white; }
+.conversation { overflow: hidden; border-left: 1px solid #d0d5dd; background: white; }
+.conversation-box { height: 100%; display: flex; flex-direction: column; }
+.transcript { flex: 1; min-height: 0; overflow: auto; padding: 1rem; }
+.turn { margin: 0 0 0.8rem; line-height: 1.4; }
+.turn .speaker { display: block; font-size: 0.75rem; font-weight: 600; color: #667085; }
+.turn.interviewer .speaker { color: #1f6feb; }
+.turn.streaming { color: #475467; }
+.composer { display: flex; gap: 0.5rem; padding: 0.6rem; border-top: 1px solid #d0d5dd; }
+.composer textarea { flex: 1; font: inherit; padding: 0.4rem; border: 1px solid #d0d5dd; border-radius: 6px; resize: none; }
+.composer button { padding: 0 1rem; font: inherit; font-weight: 600; border: 0; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; }
+.composer button:disabled { background: #98a2b3; cursor: default; }
+.clarifications { border-top: 1px solid #d0d5dd; margin-top: 1rem; }
+.clarifications h3 { font-size: 0.95rem; }
+.clarifications li { margin-bottom: 0.4rem; }
+.setup select { font: inherit; font-weight: 400; padding: 0.5rem; border: 1px solid #d0d5dd; border-radius: 6px; }
+.reading { text-align: center; margin-top: 20vh; font-size: 1.2rem; }

@@ -8,8 +8,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from backend.agent.anthropic_client import AnthropicModelClient
+from backend.agent.context import PERSONAS, Style
+from backend.agent.model import ModelClient
+from backend.agent.prep import PrepFailed
 from backend.clock import Clock, SystemClock
 from backend.config import Config, load_config
 from backend.db import Store
@@ -17,22 +21,44 @@ from backend.runner import Runner
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
 
+class StyleInput(BaseModel):
+    """A preset id or a free-text persona description (exactly one)."""
+
+    preset: str | None = None
+    custom: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _one_of(self) -> StyleInput:
+        if self.custom is not None and not self.custom.strip():
+            self.custom = None
+        if (self.preset is None) == (self.custom is None):
+            raise ValueError("give either a Style preset or a free-text description")
+        if self.preset is not None and self.preset not in PERSONAS:
+            raise ValueError(f"unknown Style preset; choose one of {sorted(PERSONAS)}")
+        return self
+
+
 class CreateSessionRequest(BaseModel):
     problem_md: str = Field(min_length=1)
     starter_code: str | None = None
+    private_notes: str | None = None
+    style: StyleInput = StyleInput(preset="faang_standard")
 
 
 class CreateSessionResponse(BaseModel):
     session_id: str
 
 
-def create_app(config: Config | None = None, clock: Clock | None = None) -> FastAPI:
+def create_app(
+    config: Config | None = None, clock: Clock | None = None, model: ModelClient | None = None
+) -> FastAPI:
     config = config or load_config()
     store = Store(config.db_path)
     manager = SessionManager(
         store=store,
         clock=clock or SystemClock(),
         runner=Runner(config.runner),
+        model=model or AnthropicModelClient(config.api_key),
         defaults=SessionDefaults(
             duration_min=config.default_duration_min,
             models=config.models,
@@ -47,8 +73,18 @@ def create_app(config: Config | None = None, clock: Clock | None = None) -> Fast
     app = FastAPI(title="Mock Interviewer", lifespan=lifespan)
 
     @app.post("/api/sessions", response_model=CreateSessionResponse)
-    def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
-        live = manager.create(problem_md=body.problem_md, starter_code=body.starter_code)
+    async def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
+        """Runs problem prep (with one retry) before creating anything; on failure nothing is
+        created and the client returns to setup with its input intact."""
+        try:
+            live = await manager.create(
+                problem_md=body.problem_md,
+                starter_code=body.starter_code,
+                private_notes=body.private_notes,
+                style=Style(preset=body.style.preset, custom=body.style.custom),
+            )
+        except PrepFailed as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return CreateSessionResponse(session_id=live.id)
 
     @app.get("/api/sessions/{session_id}")
@@ -76,6 +112,7 @@ def create_app(config: Config | None = None, clock: Clock | None = None) -> Fast
             await websocket.send_json(message)
 
         unsubscribe = live.subscribe(send)
+        live.client_connected()
         try:
             while True:
                 raw = await websocket.receive_text()

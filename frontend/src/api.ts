@@ -16,13 +16,28 @@ export interface SessionInfo {
   title: string;
   problem_md: string;
   starter_code: string | null;
-  settings: { duration_min: number; autocomplete: boolean; models: Record<string, string> };
+  settings: {
+    duration_min: number;
+    autocomplete: boolean;
+    style: StyleSetting;
+    models: Record<string, string>;
+  };
   status: "live" | "ended" | "abandoned" | "report_ready" | "report_failed";
 }
+
+export type StyleSetting = { preset: string } | { custom: string };
+
+export const STYLE_PRESETS: { id: string; label: string }[] = [
+  { id: "faang_standard", label: "FAANG standard" },
+  { id: "friendly_new_grad", label: "Friendly new-grad" },
+  { id: "pragmatic_startup", label: "Pragmatic startup" },
+];
 
 export interface CreateSessionInput {
   problem_md: string;
   starter_code?: string;
+  private_notes?: string;
+  style: StyleSetting;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

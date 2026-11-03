@@ -2,7 +2,8 @@
 
 export type ClientMessage =
   | { type: "code_update"; code: string }
-  | { type: "run"; code: string; stdin: string };
+  | { type: "run"; code: string; stdin: string }
+  | { type: "utterance"; text: string; channel: "text" };
 
 export interface RunResult {
   snapshot_seq: number;
@@ -15,8 +16,18 @@ export interface RunResult {
   truncated: boolean;
 }
 
+export interface Clarification {
+  question: string;
+  answer: string;
+  by: "interviewer" | "candidate";
+}
+
 export type ServerMessage =
   | { type: "error"; code: string; message: string }
+  | { type: "interviewer_delta"; msg_id: string; text: string }
+  | { type: "interviewer_done"; msg_id: string; full_text: string }
+  | { type: "interviewer_cancel"; msg_id: string }
+  | ({ type: "clarification"; seq: number } & Clarification)
   | { type: "run_started"; snapshot_seq: number }
   | ({ type: "run_result" } & RunResult);
 
