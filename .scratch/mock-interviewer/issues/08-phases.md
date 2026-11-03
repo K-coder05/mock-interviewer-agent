@@ -23,4 +23,4 @@
 - Metrics `phase_ms` (all intervals summed). Report page: phase timeline bar + legend in Metrics (hidden on older Reports). Top bar: Phase buttons, current highlighted, disabled after the end.
 - Tests: `tests/test_phases.py` (Live Session lock/backward/overrun; Report seam: time per phase, Correctness snapshot selection incl. no Wrap-up and Wrap-up revisited).
 
-**Notes:** Not clicked through in a browser. Correctness uses the first move to Wrap-up (a later move back does not extend it).
+**Notes:** Not clicked through in a browser. Correctness uses the latest move into Wrap-up (if the Phase moved back out and in again, code fixed in between is judged). Review fix; other review points (optimistic UI without rollback, duplicated Phase list/lock default across backend and frontend, user click on the current Phase starting no lock) left.

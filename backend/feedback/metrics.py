@@ -12,8 +12,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from backend.db import Event
-from backend.phases import time_per_phase
 from backend.feedback.tests import ExecutedTest, extract_executed_tests
+from backend.phases import time_per_phase
 
 SILENCE_GAP_MS = 60_000
 LARGE_PASTE_CHARS = 200

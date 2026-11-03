@@ -312,13 +312,17 @@ def _numbered(code: str) -> str:
 
 def correctness_snapshot(events: Sequence[Event]) -> Event | None:
     """The code judged for Correctness: the last snapshot before Wrap-up began, or the final
-    snapshot if Wrap-up never began."""
+    snapshot if Wrap-up never began. If the Phase moved back out of Wrap-up and in again, the
+    latest start counts, so code fixed in between is judged."""
     chosen: Event | None = None
+    latest: Event | None = None
     for event in events:
-        if event.type == "phase_changed" and event.payload.get("to") == WRAP_UP:
-            break
         if event.type == "code_snapshot":
-            chosen = event
+            latest = event
+        elif event.type == "phase_changed" and event.payload.get("to") == WRAP_UP:
+            chosen = latest
+    if not any(e.type == "phase_changed" and e.payload.get("to") == WRAP_UP for e in events):
+        return latest
     return chosen
 
 

@@ -144,7 +144,7 @@ async def test_correctness_uses_the_final_code_when_wrap_up_never_began(
     assert report["correctness"]["t_ms"] == 500_000
 
 
-async def test_correctness_uses_the_last_snapshot_before_the_first_wrap_up(
+async def test_correctness_uses_the_last_snapshot_before_wrap_up_began_again(
     reports: ReportHarness,
 ) -> None:
     log = reports.session()
@@ -153,10 +153,12 @@ async def test_correctness_uses_the_last_snapshot_before_the_first_wrap_up(
     log.event(450, "phase_changed", to="wrap_up", by="user", **{"from": "test"})
     log.code(500, "def solve():\n    return 'c'\n")
     log.event(550, "phase_changed", to="implement", by="user", **{"from": "wrap_up"})
-    log.code(580, "def solve():\n    return 'd'\n")
+    log.code(560, "def solve():\n    return 'd'\n")
+    log.event(570, "phase_changed", to="wrap_up", by="user", **{"from": "implement"})
+    log.code(580, "def solve():\n    return 'e'\n")
     log.end(600)
     reports.model.script(submit_report())
 
     report = (await reports.generate(log.id))["report"]
 
-    assert report["correctness"]["t_ms"] == 400_000
+    assert report["correctness"]["t_ms"] == 560_000
