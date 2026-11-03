@@ -13,17 +13,23 @@ interface Props {
 export function ReplayPanel({ sessionId, t, onSeek }: Props) {
   const [data, setData] = useState<ReplayData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const lastLine = useRef<HTMLParagraphElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let current = true;
     getReplay(sessionId)
-      .then(setData)
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      .then((d) => current && setData(d))
+      .catch((err) => current && setError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      current = false;
+    };
   }, [sessionId]);
 
   const lines = data ? transcriptAt(data.events, t) : [];
   useEffect(() => {
-    lastLine.current?.scrollIntoView?.({ block: "nearest" });
+    // Scroll the transcript box itself, not the page.
+    const box = transcriptRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
   }, [lines.length, data]);
 
   if (error) return <p className="error">{error}</p>;
@@ -43,7 +49,7 @@ export function ReplayPanel({ sessionId, t, onSeek }: Props) {
           type="range"
           min={0}
           max={total}
-          step={1000}
+          step={1}
           value={at}
           aria-label="Replay position"
           onChange={(e) => onSeek(Number(e.target.value))}
@@ -55,7 +61,7 @@ export function ReplayPanel({ sessionId, t, onSeek }: Props) {
               type="button"
               className={`marker marker-${m.kind}`}
               style={{
-                left: `${(m.t_ms / total) * 100}%`,
+                left: `${Math.min(m.t_ms / total, 1) * 100}%`,
                 width: m.end_ms ? `${((m.end_ms - m.t_ms) / total) * 100}%` : undefined,
               }}
               title={`${clock(m.t_ms)} ${m.label}`}
@@ -79,13 +85,12 @@ export function ReplayPanel({ sessionId, t, onSeek }: Props) {
           <h3>Code at {clock(at)}</h3>
           <pre className="code-view">{codeAt(data.events, at, starter)}</pre>
         </div>
-        <div className="replay-transcript">
+        <div className="replay-transcript" ref={transcriptRef}>
           <h3>Transcript</h3>
           {lines.length === 0 && <p className="hint">Nothing said yet.</p>}
-          {lines.map((line, i) => (
+          {lines.map((line) => (
             <p
               key={line.key}
-              ref={i === lines.length - 1 ? lastLine : undefined}
               className={`turn ${line.speaker}`}
             >
               <span className="speaker">
