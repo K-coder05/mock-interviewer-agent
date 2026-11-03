@@ -168,15 +168,16 @@ async def test_report_labels_autocomplete(reports: ReportHarness) -> None:
 
 async def test_pastes_appear_in_metrics_and_are_not_a_rubric_input(reports: ReportHarness) -> None:
     log = reports.session()
-    log.event(40, "paste", length=350, text="x" * 350)
+    log.event(40, "paste", length=3500, text="x" * 3500)
     log.end(100)
 
     m = await metrics_of(reports, log)
 
-    assert m["large_pastes"] == [{"t_ms": 40_000, "length": 350}]
+    assert m["large_pastes"] == [{"t_ms": 40_000, "length": 3500}]
     message = str(reports.model.requests[0].messages[0]["content"])
     assert "never lower a score" in str(reports.model.requests[0].system)
-    assert '"length": 350' in message
+    assert "Pasted 3500 characters" in message
+    assert "x" * 600 not in message  # the pasted text is clipped in the timeline
 
 
 async def test_live_session_logs_only_pastes_over_200_characters(

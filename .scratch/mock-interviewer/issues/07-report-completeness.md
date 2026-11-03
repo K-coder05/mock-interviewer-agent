@@ -26,3 +26,4 @@
 - 08: time per phase is not computed yet (no `phase_changed` events exist); add it to `compute_metrics`.
 - 10/11: `mic_muted`/`mic_unmuted` events are not logged by anything yet; `muted_ms` and `ui_event` handling for them are still to add.
 - Not clicked through in a browser.
+- Review (inline, medium; the forked review never reported): fixed a large paste's full text going into the Report prompt timeline (now clipped to 500 chars). Left: silence gaps count from t=0 so initial reading time can show as a gap; muted periods are not subtracted from gaps; words per minute counts spoken words from first code to the end of the Session, not only while typing; the Ideal Walkthrough code is hidden client-side only.
