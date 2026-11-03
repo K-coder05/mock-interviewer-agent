@@ -18,6 +18,10 @@ Rules:
 - In the Testing score, reward stating the expected result before or while running a test (asserts, or an expected value said or commented) over bare prints, and weigh which edge-case categories the candidate's own tests covered.
 - Interviewer probes (complexity questions, "what happens if...") are assessment, not help, and never count against the candidate.
 - The interview style shaped only the interviewer's tone; it never changes how you score.
+- Large pastes (over 200 characters) appear in the timeline and metrics. They are recorded for honesty only: never lower a score because of a paste.
+- Editor autocomplete is shown in <settings>; take it into account when judging Code quality, but never mention it as a fault.
+- `strengths`: exactly three, most important first, each citing something specific that happened. `improvements`: exactly three, most important first, each with a `drill`: one concrete, actionable thing to do next session (for example "Say the complexity out loud before your first line of code"), not generic advice.
+- `ideal_walkthrough`: how a strong candidate would handle this problem. `approach` covers clarifying questions, the brute force and the optimal reasoning, and tests worth running; `complexity` gives time and space; `code` is the optimal Python 3 solution. The code is hidden from the candidate until they choose to reveal it, so keep every spoiler in `code` and make `approach` readable without it (describe the idea, do not paste the solution).
 - `summary`: three to four sentences addressed to the candidate ("you"), covering the main strengths and the most important thing to improve.
 - `signal_rationale`: one sentence explaining the overall picture behind the scores. The overall hire signal itself is computed from your scores in code, so do not name a verdict such as "Hire" or "No hire".
 

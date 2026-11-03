@@ -23,6 +23,7 @@ from backend.agent.prep import prepare_problem_brief
 from backend.clock import Clock
 from backend.config import ModelIds
 from backend.db import Event, SessionRecord, Store
+from backend.feedback.metrics import LARGE_PASTE_CHARS
 from backend.feedback.generator import ReportGenerator
 from backend.ids import new_id
 from backend.runner import Runner
@@ -162,6 +163,8 @@ class LiveSession:
             await self._on_run(message)
         elif kind == "utterance":
             await self._on_utterance(message)
+        elif kind == "ui_event":
+            self._on_ui_event(message)
         else:
             await self._emit_error("unknown_message", f"Unknown message type: {kind!r}")
 
@@ -295,6 +298,13 @@ class LiveSession:
             await self._emit_error("invalid_message", "code_update requires a string `code`")
             return
         self._snapshot(code)
+
+    def _on_ui_event(self, message: dict[str, Any]) -> None:
+        """Client-observed events. A paste over `LARGE_PASTE_CHARS` is logged (never penalized);
+        smaller pastes and unknown events are ignored."""
+        text = message.get("text")
+        if message.get("event") == "paste" and isinstance(text, str) and len(text) > LARGE_PASTE_CHARS:
+            self._append("paste", {"length": len(text), "text": text})
 
     async def _on_utterance(self, message: dict[str, Any]) -> None:
         text, channel = message.get("text"), message.get("channel", "text")
@@ -470,6 +480,7 @@ class SessionManager:
         private_notes: str | None = None,
         style: Style,
         duration_min: int | None = None,
+        autocomplete: bool = False,
     ) -> LiveSession:
         """Run problem prep, then persist and start the Session.
 
@@ -487,7 +498,7 @@ class SessionManager:
         settings: dict[str, Any] = {
             "duration_min": duration_min or self._defaults.duration_min,
             "timeout_grace_s": self._defaults.timeout_grace_s,
-            "autocomplete": False,
+            "autocomplete": autocomplete,
             "style": style.to_settings(),
             "models": dataclasses.asdict(self._defaults.models),
         }

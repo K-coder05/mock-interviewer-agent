@@ -4,6 +4,7 @@ export type ClientMessage =
   | { type: "code_update"; code: string }
   | { type: "run"; code: string; stdin: string }
   | { type: "utterance"; text: string; channel: "text" }
+  | { type: "ui_event"; event: "paste"; text: string }
   | { type: "end_session" };
 
 export interface RunResult {

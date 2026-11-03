@@ -63,6 +63,18 @@ def submit_report(
         "rubric": rubric,
         "executed_test_categories": [{"id": i, "category": c} for i, c in (executed or {}).items()],
         "traced_tests": traced or [],
+        "strengths": [
+            {"title": f"Strength {i}", "detail": f"You did well in way {i}."} for i in (1, 2, 3)
+        ],
+        "improvements": [
+            {"title": f"Improve {i}", "detail": f"Work on thing {i}.", "drill": f"Drill {i}."}
+            for i in (1, 2, 3)
+        ],
+        "ideal_walkthrough": {
+            "approach": "Ask about duplicates, then use a hash map.",
+            "complexity": "O(n) time, O(n) space.",
+            "code": "def two_sum(nums, target):\n    seen = {}\n",
+        },
         **overrides,
     }
     return ToolCall("submit_report", payload)
@@ -136,6 +148,7 @@ class ReportHarness:
     def session(
         self,
         *,
+        autocomplete: bool = False,
         problem_md: str = "# Two Sum\n\nReturn indices of two numbers adding to target.",
         starter_code: str | None = None,
         brief: ProblemBrief | None = DEFAULT_BRIEF,
@@ -149,7 +162,7 @@ class ReportHarness:
             settings={
                 "duration_min": 45,
                 "timeout_grace_s": 60,
-                "autocomplete": False,
+                "autocomplete": autocomplete,
                 "style": {"preset": "faang_standard"},
                 "models": {
                     "prep": DEFAULT_MODELS.prep,

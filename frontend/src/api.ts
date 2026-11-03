@@ -39,6 +39,7 @@ export interface CreateSessionInput {
   private_notes?: string;
   style: StyleSetting;
   duration_min: number;
+  autocomplete: boolean;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -102,6 +103,40 @@ export interface TestingBreakdown {
   totals: { executed: number; traced: number; verified: number };
 }
 
+export interface Strength {
+  title: string;
+  detail: string;
+}
+
+export interface Improvement extends Strength {
+  drill: string;
+}
+
+export interface IdealWalkthrough {
+  approach: string;
+  complexity: string;
+  code: string;
+}
+
+export interface Metrics {
+  duration_ms: number;
+  time_to_first_code_ms: number | null;
+  time_to_first_run_ms: number | null;
+  time_to_first_test_ms: number | null;
+  runs: number;
+  failed_runs: number;
+  error_types: Record<string, number>;
+  silence_gaps: { start_ms: number; end_ms: number; duration_ms: number }[];
+  candidate_words: number;
+  interviewer_words: number;
+  candidate_talk_ratio: number | null;
+  coding_words: number | null;
+  coding_words_per_minute: number | null;
+  hints_by_level: Record<string, number>;
+  large_pastes: { t_ms: number; length: number }[];
+  muted_ms: number;
+}
+
 export interface Report {
   summary: string;
   overall_signal: {
@@ -113,6 +148,11 @@ export interface Report {
   rubric: RubricRow[];
   /** Absent on Reports generated before ticket 06. */
   testing?: TestingBreakdown;
+  /** The next four are absent on Reports generated before ticket 07. */
+  strengths?: Strength[];
+  improvements?: Improvement[];
+  ideal_walkthrough?: IdealWalkthrough;
+  autocomplete?: boolean;
   correctness: { executed: false; note: string; snapshot_seq: number | null; t_ms: number | null };
 }
 
@@ -129,7 +169,7 @@ export type ReportView =
       status: "report_ready";
       created_at: string;
       model: string;
-      metrics: Record<string, number>;
+      metrics: Partial<Metrics>;
       report: Report;
       usage: ReportUsage | null;
     }

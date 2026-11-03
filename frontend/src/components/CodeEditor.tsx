@@ -14,15 +14,23 @@ interface Props {
   onChange: (code: string) => void;
   /** Called with the live buffer on Cmd/Ctrl+Enter. */
   onRun: (code: string) => void;
+  /** Called with the pasted text after each paste into the editor. */
+  onPaste: (text: string) => void;
 }
 
-export function CodeEditor({ initialCode, autocomplete, onChange, onRun }: Props) {
+export function CodeEditor({ initialCode, autocomplete, onChange, onRun, onPaste }: Props) {
   const onRunRef = useRef(onRun);
   onRunRef.current = onRun;
+  const onPasteRef = useRef(onPaste);
+  onPasteRef.current = onPaste;
   const handleMount: OnMount = (editor) => {
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
       onRunRef.current(editor.getValue()),
     );
+    editor.onDidPaste((e) => {
+      const text = editor.getModel()?.getValueInRange(e.range) ?? "";
+      if (text) onPasteRef.current(text);
+    });
   };
   return (
     <Editor

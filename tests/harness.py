@@ -144,6 +144,7 @@ class LiveSessionHarness:
         style: Style | None = None,
         brief: ProblemBrief | None = DEFAULT_BRIEF,
         duration_min: int | None = None,
+        autocomplete: bool = False,
     ) -> str:
         """Run problem prep, create a Session and capture every server message it emits.
 
@@ -159,6 +160,7 @@ class LiveSessionHarness:
             private_notes=private_notes,
             style=style or Style(preset="faang_standard"),
             duration_min=duration_min,
+            autocomplete=autocomplete,
         )
         messages = self.sent.setdefault(live.id, [])
 

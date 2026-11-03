@@ -197,6 +197,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
               syncRef.current?.change(code);
             }}
             onRun={run}
+            onPaste={(text) => socketRef.current?.send({ type: "ui_event", event: "paste", text })}
           />
         </div>
         <Console

@@ -97,6 +97,38 @@ _TRACED_TEST = _object(
     }
 )
 
+_STRENGTH = _object(
+    {
+        "title": {"type": "string", "description": "A few words naming the strength."},
+        "detail": {"type": "string", "description": "One or two sentences citing what happened."},
+    }
+)
+
+_IMPROVEMENT = _object(
+    {
+        "title": {"type": "string", "description": "A few words naming the weakness."},
+        "detail": {"type": "string", "description": "One or two sentences citing what happened."},
+        "drill": {
+            "type": "string",
+            "description": "One concrete thing to practice next session, e.g. 'Say the "
+            "complexity out loud before your first line of code.'",
+        },
+    }
+)
+
+_IDEAL_WALKTHROUGH = _object(
+    {
+        "approach": {
+            "type": "string",
+            "description": "How a strong candidate would handle this problem, step by step: "
+            "clarifying, brute force, the optimal approach, tests worth running.",
+        },
+        "complexity": {"type": "string", "description": "Time and space of the optimal solution."},
+        "code": {"type": "string", "description": "The optimal solution in Python 3."},
+    },
+    "The only place a solution is shown; the app hides `code` until the Candidate reveals it.",
+)
+
 SUBMIT_REPORT_TOOL: dict[str, Any] = {
     "name": "submit_report",
     "description": "Submit the feedback report for this interview. Call exactly once.",
@@ -116,6 +148,17 @@ SUBMIT_REPORT_TOOL: dict[str, Any] = {
                 "items": _TRACED_TEST,
                 "description": "Tests the Candidate walked through by hand without running them.",
             },
+            "strengths": {
+                "type": "array",
+                "items": _STRENGTH,
+                "description": "Exactly three, most important first.",
+            },
+            "improvements": {
+                "type": "array",
+                "items": _IMPROVEMENT,
+                "description": "Exactly three, most important first, each with a drill.",
+            },
+            "ideal_walkthrough": _IDEAL_WALKTHROUGH,
         }
     ),
 }
@@ -166,12 +209,30 @@ class _TracedTest(_Model):
     category: str
 
 
+class _Strength(_Model):
+    title: str = Field(min_length=1)
+    detail: str = Field(min_length=1)
+
+
+class _Improvement(_Strength):
+    drill: str = Field(min_length=1)
+
+
+class _IdealWalkthrough(_Model):
+    approach: str = Field(min_length=1)
+    complexity: str = Field(min_length=1)
+    code: str = Field(min_length=1)
+
+
 class Submission(_Model):
     summary: str = Field(min_length=1)
     signal_rationale: str = Field(min_length=1)
     rubric: _Rubric
     executed_test_categories: list[_ExecutedCategory]
     traced_tests: list[_TracedTest]
+    strengths: list[_Strength] = Field(min_length=3, max_length=3)
+    improvements: list[_Improvement] = Field(min_length=3, max_length=3)
+    ideal_walkthrough: _IdealWalkthrough
 
     def scores(self) -> dict[str, _Score]:
         return {key: getattr(self.rubric, key) for key in DIMENSION_KEYS}
@@ -459,6 +520,10 @@ def _assemble(
             "t_ms": None if correctness is None else correctness.t_ms,
         },
         "testing": _testing(submission, record, tests),
+        "strengths": [s.model_dump() for s in submission.strengths],
+        "improvements": [i.model_dump() for i in submission.improvements],
+        "ideal_walkthrough": submission.ideal_walkthrough.model_dump(),
+        "autocomplete": bool(record.settings.get("autocomplete")),
     }
 
 
@@ -476,8 +541,8 @@ async def generate_report(
     model: ModelClient, *, model_id: str, record: SessionRecord, events: Sequence[Event]
 ) -> GeneratedReport:
     """Evaluate one stored Session. Raises ReportFailed after the retry."""
-    metrics = compute_metrics(events)
     tests = extract_executed_tests(events)
+    metrics = compute_metrics(events, tests)
     categories = test_categories(record)
     message = build_report_message(record, events, metrics, tests)
     log_t_ms = {e.t_ms for e in events}

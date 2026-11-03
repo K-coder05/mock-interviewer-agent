@@ -11,6 +11,7 @@ export function SetupPage() {
   const [stylePick, setStylePick] = useState(STYLE_PRESETS[0].id);
   const [customStyle, setCustomStyle] = useState("");
   const [durationMin, setDurationMin] = useState(45);
+  const [autocomplete, setAutocomplete] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,6 +34,7 @@ export function SetupPage() {
         private_notes: privateNotes.trim() ? privateNotes : undefined,
         style,
         duration_min: durationMin,
+        autocomplete,
       });
       navigate(`/sessions/${session_id}`);
     } catch (err) {
@@ -115,6 +117,14 @@ export function SetupPage() {
             value={durationMin}
             onChange={(e) => setDurationMin(Number(e.target.value))}
           />
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={autocomplete}
+            onChange={(e) => setAutocomplete(e.target.checked)}
+          />{" "}
+          Editor autocomplete (off is closer to a real interview; fixed for the whole Session)
         </label>
         <p className="hint">
           The timer starts when the Interviewer begins greeting you. Headphones recommended. Python 3, standard library only. Style changes only the

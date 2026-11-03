@@ -45,6 +45,7 @@ class CreateSessionRequest(BaseModel):
     private_notes: str | None = None
     style: StyleInput = StyleInput(preset="faang_standard")
     duration_min: int | None = Field(default=None, ge=5, le=180)
+    autocomplete: bool = False
 
 
 class CreateSessionResponse(BaseModel):
@@ -90,6 +91,7 @@ def create_app(
                 private_notes=body.private_notes,
                 style=Style(preset=body.style.preset, custom=body.style.custom),
                 duration_min=body.duration_min,
+                autocomplete=body.autocomplete,
             )
         except PrepFailed as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
