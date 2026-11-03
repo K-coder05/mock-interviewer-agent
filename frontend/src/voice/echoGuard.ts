@@ -7,7 +7,7 @@
 // text (the longest common subsequence of words), allowing for recognition errors in a word.
 
 /** The share of the transcript's words that must match, in order, to count as echo. */
-export const ECHO_THRESHOLD = 0.7;
+const ECHO_THRESHOLD = 0.7;
 
 function words(text: string): string[] {
   return text
@@ -54,13 +54,9 @@ function matchedInOrder(heard: string[], said: string[]): number {
 
 /** Whether `transcript` is the Interviewer's own voice: it closely matches `interviewerText`,
  * the text the Interviewer is (or was just) speaking. */
-export function isEcho(
-  transcript: string,
-  interviewerText: string,
-  threshold = ECHO_THRESHOLD,
-): boolean {
+export function isEcho(transcript: string, interviewerText: string): boolean {
   const heard = words(transcript);
   const said = words(interviewerText);
   if (heard.length === 0 || said.length === 0) return false;
-  return matchedInOrder(heard, said) / heard.length >= threshold;
+  return matchedInOrder(heard, said) / heard.length >= ECHO_THRESHOLD;
 }

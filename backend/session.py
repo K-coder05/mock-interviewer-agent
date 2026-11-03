@@ -109,7 +109,8 @@ class LiveSession:
         self._greeted = False
         self._reply_task: asyncio.Task[None] | None = None
         self._pending: list[Trigger] = []  # coalesce into the next decision call
-        self._cancellable: asyncio.Task[Decision] | None = None  # a proactive call's model stream
+        # the model stream of a proactive call in flight: cancelled when the Candidate speaks
+        self._proactive_call: asyncio.Task[Decision] | None = None
         self._triggers = TriggerEngine(
             TriggerConfig.from_settings(record.settings.get("proactive"))
         )
@@ -343,8 +344,8 @@ class LiveSession:
             await self._emit_error("invalid_message", "speaking requires a boolean `active`")
             return
         self._triggers.set_speaking(active, self._now_ms())
-        if active and self._cancellable is not None:  # a reply to the Candidate is never cancelled
-            self._cancellable.cancel()
+        if active and self._proactive_call is not None:  # never a reply to the Candidate
+            self._proactive_call.cancel()
 
     async def _on_set_phase(self, message: dict[str, Any]) -> None:
         phase = message.get("phase")
@@ -486,7 +487,7 @@ class LiveSession:
             )
         )
         if cancellable:
-            self._cancellable = call
+            self._proactive_call = call
         try:
             decision = await call
         except BaseException:
@@ -496,8 +497,8 @@ class LiveSession:
                 await self._emit({"type": "interviewer_cancel", "msg_id": msg_id})
             raise
         finally:
-            if self._cancellable is call:
-                self._cancellable = None
+            if self._proactive_call is call:
+                self._proactive_call = None
         if trigger.reason == "session_start":
             await self._start_timer()  # even a greeting with no speech starts the Session timer
         if decision.text:

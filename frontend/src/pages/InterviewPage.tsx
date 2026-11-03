@@ -9,7 +9,7 @@ import { Timer, TimerSnapshot } from "../components/Timer";
 import { Clarification, Phase, PHASE_LABELS, PHASES, RunResult, SessionSocket } from "../ws";
 import { isEcho } from "../voice/echoGuard";
 import { webSpeechSupported, WebSpeechProvider } from "../voice/speechProvider";
-import { SentenceTts, ttsSupported } from "../voice/tts";
+import { SentenceTts, ttsEnabled } from "../voice/tts";
 
 // The server counts the Candidate as speaking for 1.5 s after each `speaking` signal, so
 // interim results refresh it at least this often.
@@ -90,11 +90,9 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
   const syncRef = useRef<CodeSync | null>(null);
   const socketRef = useRef<SessionSocket | null>(null);
   const ttsRef = useRef<SentenceTts | null>(null);
-  const interviewerMutedRef = useRef(interviewerMuted);
-  interviewerMutedRef.current = interviewerMuted;
-  const voice = session?.settings.voice;
-  const ttsAvailable = ttsSupported() && voice?.tts !== "off";
-  const pauseSttDuringTts = voice?.pause_stt_during_tts ?? false;
+  const interviewerMutedRef = useRef(interviewerMuted); // read when the TTS is created
+  const ttsAvailable = ttsEnabled(session?.settings.voice);
+  const pauseSttDuringTts = session?.settings.voice?.pause_stt_during_tts ?? false;
 
   useEffect(() => {
     let cancelled = false;
@@ -118,14 +116,13 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     if (!session) return;
     bufferRef.current = session.starter_code ?? "";
     const settings = session.settings.voice;
-    const tts =
-      ttsSupported() && settings?.tts !== "off"
-        ? new SentenceTts({
-            voiceName: settings?.tts_voice,
-            rate: settings?.tts_rate,
-            onSpeakingChange: setTtsSpeaking,
-          })
-        : null;
+    const tts = ttsEnabled(settings)
+      ? new SentenceTts({
+          voiceName: settings?.tts_voice,
+          rate: settings?.tts_rate,
+          onSpeakingChange: setTtsSpeaking,
+        })
+      : null;
     tts?.setEnabled(!interviewerMutedRef.current);
     ttsRef.current = tts;
     const socket = new SessionSocket(session.id, (message) => {
@@ -216,6 +213,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
     const send = (message: Parameters<SessionSocket["send"]>[0]) => socketRef.current?.send(message);
     const echo = (text: string) => isEcho(text, ttsRef.current?.echoReference() ?? "");
     const bargeIn = () => {
+      if (pauseSttDuringTts) return; // the speaker fallback has no barge-in
       const msgId = ttsRef.current?.interrupt();
       if (msgId) send({ type: "ui_event", event: "interrupted", msg_id: msgId });
     };
@@ -254,11 +252,12 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
       setInterim("");
       send({ type: "speaking", active: false });
     };
-  }, [session, ended, muted, voiceError, listenPaused]);
+  }, [session, ended, muted, voiceError, listenPaused, pauseSttDuringTts]);
 
   const toggleInterviewerMuted = () => {
     const next = !interviewerMuted;
     setInterviewerMuted(next);
+    interviewerMutedRef.current = next;
     storeInterviewerMuted(next);
     ttsRef.current?.setEnabled(!next);
   };
@@ -339,7 +338,7 @@ export function InterviewPage({ sessionId }: { sessionId: string }) {
         {ttsAvailable && (
           <button
             type="button"
-            className={`voice-button ${interviewerMuted ? "muted" : "speaking"}`}
+            className={`voice-button ${interviewerMuted ? "muted" : "on"}`}
             aria-pressed={interviewerMuted}
             onClick={toggleInterviewerMuted}
             title={

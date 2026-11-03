@@ -1,3 +1,5 @@
+import type { VoiceSettings } from "../api";
+
 // The Interviewer's voice: a sentence-level text-to-speech queue on the browser's
 // speechSynthesis. Replies stream in as text deltas; each complete sentence is spoken as soon as
 // it arrives, so speech starts long before the reply has finished streaming.
@@ -6,7 +8,7 @@
 // tail after it stops (speech recognition reports words up to ~1.2 s late).
 
 /** How long after the Interviewer stops speaking its text still counts as possible echo. */
-export const ECHO_TAIL_MS = 3000;
+const ECHO_TAIL_MS = 3000;
 
 export interface TtsOptions {
   /** A speechSynthesis voice name (or voiceURI); null or unknown = the browser default. */
@@ -18,6 +20,12 @@ export interface TtsOptions {
 
 export function ttsSupported(): boolean {
   return typeof window !== "undefined" && "speechSynthesis" in window;
+}
+
+/** Whether the Interviewer can speak in this Session: the browser has speech synthesis and the
+ * Session's settings don't turn TTS off. */
+export function ttsEnabled(settings: VoiceSettings | undefined): boolean {
+  return ttsSupported() && settings?.tts !== "off";
 }
 
 // A sentence ends at . ! ? or … (plus closing quotes/brackets) followed by whitespace, or at a
@@ -53,7 +61,11 @@ export class SentenceTts {
   private dropped = new Set<string>(); // stopped replies: their later deltas are not spoken
   private speakingNow = false;
 
-  constructor(private readonly options: TtsOptions = {}) {}
+  constructor(private readonly options: TtsOptions = {}) {
+    // The browser loads its voice list lazily: ask early so the configured voice is there for
+    // the first sentence.
+    if (ttsSupported()) window.speechSynthesis.getVoices();
+  }
 
   /** True from a reply's first sentence until it is finished and fully spoken (or stopped). */
   get speaking(): boolean {
@@ -86,7 +98,7 @@ export class SentenceTts {
     const last = reply.unspoken.trim();
     reply.unspoken = "";
     this.enqueue(last ? [last] : []);
-    this.update();
+    this.refreshSpeaking();
   }
 
   /** The server withdrew reply `msgId` (interviewer_cancel): stop speaking it. */
@@ -95,9 +107,11 @@ export class SentenceTts {
     if (this.reply?.msgId === msgId) this.stop();
   }
 
-  /** Barge-in: stop speaking at once. Returns the reply that was cut off, if one was. */
+  /** Barge-in: stop speaking at once. Returns the reply that was cut off, if one was. A reply
+   * whose first sentence hasn't started yet is left alone (it isn't speaking yet). */
   interrupt(): string | null {
-    const msgId = this.speakingNow ? (this.reply?.msgId ?? null) : null;
+    if (!this.speakingNow) return null;
+    const msgId = this.reply?.msgId ?? null;
     this.stop();
     return msgId;
   }
@@ -133,7 +147,7 @@ export class SentenceTts {
   }
 
   private speakNext(): void {
-    if (this.current || this.queue.length === 0) return this.update();
+    if (this.current || this.queue.length === 0) return this.refreshSpeaking();
     const text = this.queue.shift() as string;
     const utterance = new SpeechSynthesisUtterance(text);
     const voice = this.voice();
@@ -147,7 +161,7 @@ export class SentenceTts {
     utterance.onend = done;
     utterance.onerror = done;
     this.current = utterance;
-    this.update();
+    this.refreshSpeaking();
     window.speechSynthesis.speak(utterance);
   }
 
@@ -168,7 +182,7 @@ export class SentenceTts {
       this.current = null;
       if (ttsSupported()) window.speechSynthesis.cancel();
     }
-    this.update();
+    this.refreshSpeaking();
   }
 
   private end(reply: Reply): void {
@@ -177,7 +191,7 @@ export class SentenceTts {
 
   // Speaking while a sentence is playing or queued, or the reply is still streaming after its
   // first sentence started (so the pause between streamed sentences isn't "quiet").
-  private update(): void {
+  private refreshSpeaking(): void {
     const reply = this.reply;
     const started = reply !== null && reply.text !== reply.unspoken; // a sentence was queued
     const streaming = started && reply.endedAt === null && !reply.finished;
