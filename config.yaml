@@ -1,0 +1,28 @@
+# Everything tunable lives here. Secrets (ANTHROPIC_API_KEY) go in .env.
+models:
+  prep: claude-opus-5-5
+  interviewer: claude-sonnet-5-5
+  report: claude-opus-5-5
+interview:
+  default_duration_min: 45
+  proactive_cooldown_s: 45
+  max_proactive_per_5min: 3
+  silence_nudge_s: {clarify: 45, approach: 45, implement: 90, test: 60}
+  run_reaction_delay_s: 3
+  muted_silence_multiplier: 2
+  user_phase_lock_s: 120
+  timeout_grace_s: 60
+  abandon_after_idle_min: 10
+  style_presets: [faang_standard, friendly_new_grad, pragmatic_startup]
+runner:
+  python: python3       # system interpreter, not the backend venv; stdlib only
+  timeout_s: 10
+  memory_mb: 512
+  output_cap_kb: 64
+voice:
+  stt: webspeech        # webspeech | whisper (v2)
+  tts: browser          # browser | off
+  utterance_silence_ms: 1200
+  pause_stt_during_tts: false   # fallback for speakers; disables barge-in
+storage:
+  db_path: data/interviews.db

@@ -1,0 +1,30 @@
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #1d1f23;
+  background: #f6f7f9;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+.error { color: #b42318; }
+.hint { color: #667085; font-size: 0.9rem; }
+.loading { padding: 2rem; }
+
+.setup { max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+.setup form { display: flex; flex-direction: column; gap: 1rem; }
+.setup label { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 600; }
+.setup textarea { font: inherit; font-weight: 400; padding: 0.6rem; border: 1px solid #d0d5dd; border-radius: 6px; resize: vertical; }
+.setup textarea.code { font-family: ui-monospace, Menlo, monospace; }
+.setup button { align-self: flex-start; padding: 0.6rem 1.6rem; font: inherit; font-weight: 600; border: 0; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; }
+.setup button:disabled { background: #98a2b3; cursor: default; }
+
+.interview {
+  display: grid;
+  grid-template-columns: 30% 45% 25%;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+}
+.topbar { grid-column: 1 / -1; display: flex; gap: 1rem; align-items: center; padding: 0.6rem 1rem; border-bottom: 1px solid #d0d5dd; background: white; }
+.pane { min-height: 0; overflow: auto; }
+.problem { padding: 0 1rem; border-right: 1px solid #d0d5dd; background: white; }
+.editor { overflow: hidden; }
+.conversation { padding: 1rem; border-left: 1px solid #d0d5dd; background: white; }
