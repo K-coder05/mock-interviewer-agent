@@ -25,6 +25,8 @@ runner:
 voice:
   stt: webspeech        # webspeech | whisper (v2)
   tts: browser          # browser | off
+  tts_voice: null       # a speechSynthesis voice name (e.g. "Google US English"); null = browser default
+  tts_rate: 1.0         # speech rate, 0.1-10
   utterance_silence_ms: 1200
   pause_stt_during_tts: false   # fallback for speakers; disables barge-in
 storage:

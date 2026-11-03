@@ -8,6 +8,7 @@ export type ClientMessage =
   | { type: "speaking"; active: boolean }
   | { type: "ui_event"; event: "paste"; text: string }
   | { type: "ui_event"; event: "mute"; muted: boolean }
+  | { type: "ui_event"; event: "interrupted"; msg_id: string }
   | { type: "set_phase"; phase: Phase }
   | { type: "end_session" };
 

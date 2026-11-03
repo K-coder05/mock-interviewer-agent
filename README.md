@@ -24,17 +24,18 @@ Tunables live in `config.yaml`; the SQLite database is `data/interviews.db` (git
 ## Development
 
 ```bash
-make test        # pytest (no real API calls; the model is always a scripted fake)
+make test        # pytest (no real API calls; the model is always a scripted fake) + vitest (echo guard)
 make typecheck   # mypy --strict (backend + tests) and tsc (frontend)
 make check       # both
 uv run pytest tests/test_live_session.py   # a single test file
+cd frontend && npm test                    # the frontend tests (echo-guard matcher)
 make backend     # run only the backend (auto-reload)
 make frontend    # run only the frontend
 ```
 
 Layout: `backend/` (FastAPI app, Session engine, SQLite store; `backend/agent/` holds the
 Interviewer, its prompts and the trigger engine + guardrails in `triggers.py`), `frontend/` (React + Vite +
-Monaco; `frontend/src/voice/` holds the speech-provider interface and its Web Speech implementation), `tests/` (pytest; `tests/harness.py` is the Live Session harness: message driver,
+Monaco; `frontend/src/voice/` holds the speech-provider interface and its Web Speech implementation, the sentence TTS queue and the echo guard), `tests/` (pytest; `tests/harness.py` is the Live Session harness: message driver,
 fake clock, scripted fake model; `tests/report_harness.py` is the Report seam harness: event-log
 fixtures, a scripted `submit_report`, and the Report generator). The Report lives in
 `backend/feedback/` (rubric and Overall Signal, prompt, validation, background generator).

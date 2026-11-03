@@ -20,6 +20,7 @@ frontend:
 
 test:
 	uv run pytest
+	cd frontend && npm test
 
 typecheck:
 	uv run mypy

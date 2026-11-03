@@ -151,6 +151,11 @@ def build_turn_message(
             who = "Interviewer" if p["speaker"] == "interviewer" else "Candidate"
             via = " (typed)" if p.get("channel") == "text" and who == "Candidate" else ""
             transcript.append(f"[{_clock(event.t_ms)}] {who}{via}: {p['text']}")
+        elif event.type == "interviewer_interrupted":
+            transcript.append(
+                f"[{_clock(event.t_ms)}] (The candidate interrupted you while you were speaking: "
+                "they may not have heard the rest of what you said.)"
+            )
         elif event.type == "clarification":
             clarifications.append(f"- Q: {p['question']} A: {p['answer']} (by {p['by']})")
         elif event.type == "code_snapshot":

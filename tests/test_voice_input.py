@@ -364,4 +364,4 @@ async def test_the_utterance_silence_boundary_comes_from_config_and_is_kept_per_
     assert load_config().voice.utterance_silence_ms == 1200
 
     session_id = await harness.start()
-    assert harness.session(session_id).settings["voice"] == {"utterance_silence_ms": 1200}
+    assert harness.session(session_id).settings["voice"]["utterance_silence_ms"] == 1200

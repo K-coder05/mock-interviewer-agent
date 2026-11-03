@@ -388,6 +388,8 @@ def _timeline_entry(event: Event, full_snapshots: set[int]) -> str:
         return f"{stamp} Candidate muted their microphone (speech from here on is not captured)"
     if event.type == "mic_unmuted":
         return f"{stamp} Candidate unmuted their microphone"
+    if event.type == "interviewer_interrupted":
+        return f"{stamp} Candidate interrupted the Interviewer while it was speaking"
     if event.type == "session_ended":
         return f"{stamp} Session ended ({p.get('reason')})"
     return f"{stamp} {event.type}: {json.dumps(p, sort_keys=True)}"

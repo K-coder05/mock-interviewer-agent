@@ -109,6 +109,7 @@ class LiveSession:
         self._greeted = False
         self._reply_task: asyncio.Task[None] | None = None
         self._pending: list[Trigger] = []  # coalesce into the next decision call
+        self._cancellable: asyncio.Task[Decision] | None = None  # a proactive call's model stream
         self._triggers = TriggerEngine(
             TriggerConfig.from_settings(record.settings.get("proactive"))
         )
@@ -323,13 +324,17 @@ class LiveSession:
     def _on_ui_event(self, message: dict[str, Any]) -> None:
         """Client-observed events. A paste over `LARGE_PASTE_CHARS` is logged (never penalized);
         smaller pastes and unknown events are ignored. Muting or unmuting the mic (`mute` with
-        `muted`) is logged as `mic_muted`/`mic_unmuted` when it changes the state."""
+        `muted`) is logged as `mic_muted`/`mic_unmuted` when it changes the state. Barge-in
+        (`interrupted` with the `msg_id` whose speech the Candidate talked over) is logged as
+        `interviewer_interrupted`."""
         event, text = message.get("event"), message.get("text")
         if event == "paste" and isinstance(text, str) and len(text) > LARGE_PASTE_CHARS:
             self._append("paste", {"length": len(text), "text": text[:PASTE_TEXT_CAP]})
         elif event == "mute" and isinstance(muted := message.get("muted"), bool):
             if muted != self._triggers.muted:
                 self._append("mic_muted" if muted else "mic_unmuted", {})
+        elif event == "interrupted" and isinstance(msg_id := message.get("msg_id"), str):
+            self._append("interviewer_interrupted", {"msg_id": msg_id})
 
     async def _on_speaking(self, message: dict[str, Any]) -> None:
         """Interim speech (`active: true`) or its end: the never-interrupt guard."""
@@ -338,6 +343,8 @@ class LiveSession:
             await self._emit_error("invalid_message", "speaking requires a boolean `active`")
             return
         self._triggers.set_speaking(active, self._now_ms())
+        if active and self._cancellable is not None:  # a reply to the Candidate is never cancelled
+            self._cancellable.cancel()
 
     async def _on_set_phase(self, message: dict[str, Any]) -> None:
         phase = message.get("phase")
@@ -423,12 +430,22 @@ class LiveSession:
                 self._triggers.hold_back(trigger, held)
             return
         try:
-            decision = await self._decide(lead, others)
+            decision = await self._decide(lead, others, cancellable=lead.proactive)
             if not decision.text and lead.reason == "typed_message":
                 # A typed message always gets a spoken reply, even if the model only called a tool.
                 decision = await self._decide(Trigger("typed_message_unanswered"))
         except asyncio.CancelledError:
-            raise
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise  # the Session is closing, not a cancel by speech
+            # The Candidate started speaking: the proactive call was cancelled mid-stream.
+            self._append(
+                "trigger",
+                {**logged, "outcome": "suppressed", "suppressed_by": "speaking", "cancelled": True},
+            )
+            for trigger in (lead, *others):
+                self._triggers.hold_back(trigger, "speaking")
+            return
         except Exception as exc:
             code = exc.code if isinstance(exc, ModelError) else "interviewer_failed"
             self._append("trigger", {**logged, "outcome": "silent", "error": code})
@@ -439,9 +456,13 @@ class LiveSession:
             reason = {"silent_reason": decision.silent_reason} if decision.silent_reason else {}
             self._append("trigger", {**logged, "outcome": "silent", **reason})
 
-    async def _decide(self, trigger: Trigger, coalesced: Sequence[Trigger] = ()) -> Decision:
+    async def _decide(
+        self, trigger: Trigger, coalesced: Sequence[Trigger] = (), *, cancellable: bool = False
+    ) -> Decision:
         """One decision call, streamed to clients and applied to the event log. A reply that
-        fails part-way is cancelled (`interviewer_cancel`) and the error re-raised."""
+        fails part-way is cancelled (`interviewer_cancel`) and the error re-raised. A
+        `cancellable` (proactive) call's model stream is cancelled when the Candidate starts
+        speaking (CancelledError); once the stream has finished, its result is applied whole."""
         msg_id = new_id("msg")
         streamed = False
 
@@ -453,8 +474,8 @@ class LiveSession:
             await self._emit({"type": "interviewer_delta", "msg_id": msg_id, "text": text})
 
         start = self._now_ms()
-        try:
-            decision = await self._interviewer.decide(
+        call = asyncio.create_task(
+            self._interviewer.decide(
                 self._store.events(self.id),
                 now_ms=start,
                 remaining_ms=None if self._timer_started_ms is None else self._remaining_ms(),
@@ -463,12 +484,20 @@ class LiveSession:
                 coalesced=coalesced,
                 on_text=on_text,
             )
+        )
+        if cancellable:
+            self._cancellable = call
+        try:
+            decision = await call
         except BaseException:
             if trigger.reason == "session_start" and not isinstance(sys.exc_info()[1], asyncio.CancelledError):
                 await self._start_timer()  # a failed greeting must not leave the interview untimed
             if streamed:
                 await self._emit({"type": "interviewer_cancel", "msg_id": msg_id})
             raise
+        finally:
+            if self._cancellable is call:
+                self._cancellable = None
         if trigger.reason == "session_start":
             await self._start_timer()  # even a greeting with no speech starts the Session timer
         if decision.text:

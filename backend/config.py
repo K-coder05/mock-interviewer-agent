@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 import yaml
 from dotenv import load_dotenv
@@ -34,6 +34,9 @@ class RunnerConfig:
     output_cap_kb: int = 64
 
 
+TtsEngine = Literal["browser", "off"]
+
+
 @dataclass(frozen=True)
 class VoiceConfig:
     """`config.yaml` `voice`: what the browser's voice layer needs, stored in each Session's
@@ -41,9 +44,41 @@ class VoiceConfig:
 
     utterance_silence_ms: int = 1200
     """Interim speech with no new result for this long ends the utterance."""
+    tts: TtsEngine = "browser"
+    """The Interviewer's voice: the browser's speech synthesis, or `off` (text only)."""
+    tts_voice: str | None = None
+    """A speech-synthesis voice name (as the browser lists it); None is the browser default."""
+    tts_rate: float = 1.0
+    pause_stt_during_tts: bool = False
+    """Fallback for speakers: stop listening while the Interviewer speaks (disables barge-in)."""
 
     def to_settings(self) -> dict[str, Any]:
-        return {"utterance_silence_ms": self.utterance_silence_ms}
+        return {
+            "utterance_silence_ms": self.utterance_silence_ms,
+            "tts": self.tts,
+            "tts_voice": self.tts_voice,
+            "tts_rate": self.tts_rate,
+            "pause_stt_during_tts": self.pause_stt_during_tts,
+        }
+
+    @classmethod
+    def from_config(cls, value: dict[str, Any] | None) -> VoiceConfig:
+        value, default = value or {}, cls()
+        tts = value.get("tts", default.tts)
+        if tts not in get_args(TtsEngine):
+            raise ConfigError(f"voice.tts must be one of {list(get_args(TtsEngine))}, not {tts!r}")
+        voice = value.get("tts_voice")
+        return cls(
+            utterance_silence_ms=int(
+                value.get("utterance_silence_ms", default.utterance_silence_ms)
+            ),
+            tts=tts,
+            tts_voice=str(voice) if voice else None,
+            tts_rate=float(value.get("tts_rate", default.tts_rate)),
+            pause_stt_during_tts=bool(
+                value.get("pause_stt_during_tts", default.pause_stt_during_tts)
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -96,12 +131,6 @@ def load_config(
             output_cap_kb=int(runner_raw.get("output_cap_kb", 64)),
         ),
         triggers=TriggerConfig.from_settings(interview),
-        voice=VoiceConfig(
-            utterance_silence_ms=int(
-                raw.get("voice", {}).get(
-                    "utterance_silence_ms", VoiceConfig.utterance_silence_ms
-                )
-            )
-        ),
+        voice=VoiceConfig.from_config(raw.get("voice")),
         raw=raw,
     )

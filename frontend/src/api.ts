@@ -21,9 +21,19 @@ export interface SessionInfo {
     autocomplete: boolean;
     style: StyleSetting;
     models: Record<string, string>;
-    voice?: { utterance_silence_ms: number };
+    /** Absent on Sessions created before ticket 11; the TTS keys before ticket 12. */
+    voice?: VoiceSettings;
   };
   status: "live" | "ended" | "abandoned" | "report_ready" | "report_failed";
+}
+
+export interface VoiceSettings {
+  utterance_silence_ms: number;
+  tts?: "browser" | "off";
+  tts_voice?: string | null;
+  tts_rate?: number;
+  /** Fallback for speakers: stop listening while the Interviewer speaks (no barge-in). */
+  pause_stt_during_tts?: boolean;
 }
 
 export type StyleSetting = { preset: string } | { custom: string };
