@@ -10,18 +10,16 @@ import {
   Strength,
   TestingBreakdown,
 } from "../api";
+import { ReplayPanel } from "../components/ReplayPanel";
+import { clock } from "../replay";
 import { Phase, PHASE_LABELS, PHASES } from "../ws";
 
 const POLL_MS = 2000;
 
-function clock(tMs: number): string {
-  const seconds = Math.floor(tMs / 1000);
-  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
 export function ReportPage({ sessionId }: { sessionId: string }) {
   const [view, setView] = useState<ReportView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [replayT, setReplayT] = useState(0);
 
   const load = useCallback(() => {
     getReport(sessionId)
@@ -52,10 +50,15 @@ export function ReportPage({ sessionId }: { sessionId: string }) {
       });
   };
 
+  const seek = (tMs: number) => {
+    setReplayT(tMs);
+    document.getElementById("replay")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <main className="report">
       <p>
-        <a href={`#/sessions/${sessionId}`}>Back to the interview</a>
+        <a href="#/history">History</a> · <a href={`#/sessions/${sessionId}`}>Back to the interview</a>
       </p>
       {error && <p className="error">{error}</p>}
       {!view ? (
@@ -79,13 +82,22 @@ export function ReportPage({ sessionId }: { sessionId: string }) {
           </button>
         </div>
       ) : view.status === "report_ready" ? (
-        <ReadyReport view={view} />
+        <ReadyReport view={view} onSeek={seek} />
       ) : null}
+      {view && view.status !== "live" && (
+        <ReplayPanel sessionId={sessionId} t={replayT} onSeek={setReplayT} />
+      )}
     </main>
   );
 }
 
-function ReadyReport({ view }: { view: Extract<ReportView, { status: "report_ready" }> }) {
+function ReadyReport({
+  view,
+  onSeek,
+}: {
+  view: Extract<ReportView, { status: "report_ready" }>;
+  onSeek: (tMs: number) => void;
+}) {
   const { report, usage, metrics } = view;
   const signal = report.overall_signal;
   return (
@@ -125,7 +137,7 @@ function ReadyReport({ view }: { view: Extract<ReportView, { status: "report_rea
                 <ul>
                   {row.evidence.map((e, i) => (
                     <li key={i}>
-                      <span className="stamp">{clock(e.t_ms)}</span>{" "}
+                      <Stamp tMs={e.t_ms} onSeek={onSeek} />{" "}
                       <q>{e.quote_or_code}</q> {e.comment}
                     </li>
                   ))}
@@ -138,7 +150,7 @@ function ReadyReport({ view }: { view: Extract<ReportView, { status: "report_rea
       {report.strengths && report.improvements && (
         <FeedbackSection strengths={report.strengths} improvements={report.improvements} />
       )}
-      {report.testing && <TestingSection testing={report.testing} />}
+      {report.testing && <TestingSection testing={report.testing} onSeek={onSeek} />}
       <MetricsSection metrics={metrics} />
       {report.ideal_walkthrough && <WalkthroughSection walkthrough={report.ideal_walkthrough} />}
       <p className="hint">
@@ -151,10 +163,19 @@ function ReadyReport({ view }: { view: Extract<ReportView, { status: "report_rea
   );
 }
 
-function TestRow({ test }: { test: CandidateTest }) {
+/** A timestamp that jumps the replay to that moment. */
+function Stamp({ tMs, onSeek }: { tMs: number; onSeek: (tMs: number) => void }) {
+  return (
+    <button type="button" className="stamp stamp-link" title="Show in replay" onClick={() => onSeek(tMs)}>
+      {clock(tMs)}
+    </button>
+  );
+}
+
+function TestRow({ test, onSeek }: { test: CandidateTest; onSeek: (tMs: number) => void }) {
   return (
     <li>
-      <span className="stamp">{clock(test.t_ms)}</span> <code>{test.input}</code>{" "}
+      <Stamp tMs={test.t_ms} onSeek={onSeek} /> <code>{test.input}</code>{" "}
       <span className="hint">
         {test.kind}
         {test.form === "stdin" && ", stdin"}
@@ -168,7 +189,13 @@ function TestRow({ test }: { test: CandidateTest }) {
   );
 }
 
-function TestingSection({ testing }: { testing: TestingBreakdown }) {
+function TestingSection({
+  testing,
+  onSeek,
+}: {
+  testing: TestingBreakdown;
+  onSeek: (tMs: number) => void;
+}) {
   const { totals } = testing;
   return (
     <section className="testing">
@@ -182,7 +209,7 @@ function TestingSection({ testing }: { testing: TestingBreakdown }) {
           <h3>{group.category}</h3>
           <ul>
             {group.tests.map((t) => (
-              <TestRow key={t.id} test={t} />
+              <TestRow key={t.id} test={t} onSeek={onSeek} />
             ))}
           </ul>
         </div>
@@ -193,7 +220,7 @@ function TestingSection({ testing }: { testing: TestingBreakdown }) {
           <p className="hint">You never said or wrote what these should produce.</p>
           <ul>
             {testing.ran_but_not_verified.map((t) => (
-              <TestRow key={t.id} test={t} />
+              <TestRow key={t.id} test={t} onSeek={onSeek} />
             ))}
           </ul>
         </div>

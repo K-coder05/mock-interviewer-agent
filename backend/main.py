@@ -18,6 +18,7 @@ from backend.clock import Clock, SystemClock
 from backend.config import Config, load_config
 from backend.db import Store
 from backend.feedback.generator import ReportGenerator
+from backend.history import list_history, replay
 from backend.runner import Runner
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
@@ -101,6 +102,17 @@ def create_app(
         except PrepFailed as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return CreateSessionResponse(session_id=live.id)
+
+    @app.get("/api/sessions")
+    def list_sessions() -> list[dict[str, Any]]:
+        return list_history(store)
+
+    @app.get("/api/sessions/{session_id}/replay")
+    def get_replay(session_id: str) -> dict[str, Any]:
+        data = replay(store, session_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return data
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict[str, Any]:

@@ -52,7 +52,7 @@ def _first_code_ms(events: Sequence[Event]) -> int | None:
     return None
 
 
-def _silence_gaps(events: Sequence[Event], end_ms: int) -> list[dict[str, int]]:
+def silence_gaps(events: Sequence[Event], end_ms: int) -> list[dict[str, int]]:
     """Stretches over 60 s with no Candidate speech, typing, Run or paste."""
     marks = [0]
     for e in events:
@@ -124,7 +124,7 @@ def compute_metrics(
         ),
         "error_types": dict(Counter(t for r in runs if (t := _error_type(r)))),
         "phase_ms": time_per_phase(events, end_ms),
-        "silence_gaps": _silence_gaps(events, end_ms),
+        "silence_gaps": silence_gaps(events, end_ms),
         "candidate_words": words["user"],
         "interviewer_words": words["interviewer"],
         "candidate_talk_ratio": round(words["user"] / spoken, 2) if spoken else None,

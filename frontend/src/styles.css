@@ -94,3 +94,22 @@ body { margin: 0; }
 .rubric .score { font: 700 1.2rem ui-monospace, Menlo, monospace; text-align: center; }
 .score-1 { color: #b42318; } .score-2 { color: #b54708; } .score-3, .score-4 { color: #067647; }
 .stamp { font: 600 0.85rem ui-monospace, Menlo, monospace; color: #1f6feb; }
+.history { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+.history .signal-label { font-size: 1rem; }
+.stamp-link { padding: 0; border: 0; background: none; color: #1f6feb; font: inherit; font-family: ui-monospace, Menlo, monospace; text-decoration: underline; cursor: pointer; }
+.report .stamp-link { padding: 0; background: none; color: #1f6feb; font-weight: 400; }
+.replay { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #d0d5dd; }
+.scrubber input[type="range"] { width: 100%; }
+.markers { position: relative; height: 1.2rem; }
+.marker { position: absolute; top: 0; height: 100%; min-width: 6px; padding: 0; border: 0; border-radius: 3px; cursor: pointer; }
+.report .marker { padding: 0; }
+.marker-run { background: #1f6feb; }
+.marker-hint { background: #f79009; }
+.marker-phase { background: #7a5af8; }
+.marker-silence { background: #98a2b3; opacity: 0.6; }
+.marker-legend span { display: inline-block; margin-right: 0.5rem; padding: 0 0.4rem; border-radius: 3px; color: white; font-size: 0.8rem; }
+.replay-body { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.replay-transcript { max-height: 24rem; overflow: auto; }
+.code-view { margin: 0; padding: 0.6rem; overflow: auto; max-height: 24rem; border-radius: 6px; background: #111827; color: #e5e7eb; font: 13px ui-monospace, Menlo, monospace; white-space: pre; }
+.run-output .stderr { color: #f87171; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }

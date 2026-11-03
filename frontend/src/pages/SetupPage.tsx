@@ -56,6 +56,9 @@ export function SetupPage() {
   return (
     <main className="setup">
       <h1>Mock Interviewer</h1>
+      <p>
+        <a href="#/history">History</a>
+      </p>
       <form onSubmit={start}>
         <label>
           Problem statement (Markdown)

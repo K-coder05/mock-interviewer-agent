@@ -198,3 +198,36 @@ export function regenerateReport(id: string): Promise<{ status: "generating" }> 
     method: "POST",
   });
 }
+
+export interface HistoryRow {
+  id: string;
+  title: string;
+  created_at: string;
+  status: SessionInfo["status"];
+  duration_ms: number;
+  /** Null while the Session has no Report. */
+  overall_signal: Report["overall_signal"]["label"] | null;
+}
+
+export function listSessions(): Promise<HistoryRow[]> {
+  return request("/api/sessions");
+}
+
+export interface TimelineMarker {
+  kind: "run" | "hint" | "phase" | "silence";
+  t_ms: number;
+  /** Silence gaps only. */
+  end_ms: number | null;
+  label: string;
+}
+
+export interface ReplayData {
+  session: SessionInfo;
+  events: SessionEvent[];
+  duration_ms: number;
+  markers: TimelineMarker[];
+}
+
+export function getReplay(id: string): Promise<ReplayData> {
+  return request(`/api/sessions/${encodeURIComponent(id)}/replay`);
+}
