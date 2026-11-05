@@ -360,6 +360,7 @@ async def test_guardrails_and_thresholds_come_from_config_and_are_kept_per_sessi
     assert triggers.max_proactive_per_5min == 3
     assert triggers.silence_nudge_s == {"clarify": 45, "approach": 45, "implement": 90, "test": 60}
     assert triggers.muted_silence_multiplier == 2
+    assert triggers.utterance_settle_s == 1.5
 
     session_id = await harness.start()
     assert harness.session(session_id).settings["proactive"] == {
@@ -371,6 +372,7 @@ async def test_guardrails_and_thresholds_come_from_config_and_are_kept_per_sessi
         "coding_pause_lines": 25,
         "coding_pause_idle_s": 30,
         "muted_silence_multiplier": 2,
+        "utterance_settle_s": 1.5,
     }
 
 

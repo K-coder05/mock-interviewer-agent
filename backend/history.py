@@ -8,6 +8,9 @@ from typing import Any, Literal
 
 from backend.db import Event, Store
 from backend.feedback.metrics import silence_gaps
+from backend.usage import summarize
+
+REPLAY_HIDDEN = frozenset({"interviewer_note", "model_usage"})
 
 
 def duration_ms(events: list[Event]) -> int:
@@ -59,7 +62,8 @@ def markers(events: list[Event], end_ms: int) -> list[dict[str, Any]]:
 
 
 def replay(store: Store, session_id: str) -> dict[str, Any] | None:
-    """The Session, its events (the Interviewer's private notes left out) and the markers."""
+    """The Session, its events (the Interviewer's private notes and per-call usage left out)
+    and the markers."""
     record = store.get_session(session_id)
     if record is None:
         return None
@@ -67,10 +71,22 @@ def replay(store: Store, session_id: str) -> dict[str, Any] | None:
     end_ms = duration_ms(events)
     return {
         "session": record.to_public_dict(),
-        "events": [e.to_dict() for e in events if e.type != "interviewer_note"],
+        "events": [e.to_dict() for e in events if e.type not in REPLAY_HIDDEN],
         "duration_ms": end_ms,
         "markers": markers(events, end_ms),
     }
+
+
+def session_usage(store: Store, session_id: str) -> dict[str, Any] | None:
+    """Tokens and estimated cost of the Session's model calls (prep, Interviewer, Report)."""
+    if store.get_session(session_id) is None:
+        return None
+    report = store.get_report(session_id)
+    return summarize(
+        store.events(session_id),
+        report.usage if report else None,
+        report.model if report else None,
+    )
 
 
 def export_jsonl(store: Store, session_id: str) -> str | None:

@@ -3,10 +3,15 @@
 The engine observes every event the Session appends (the per-Session event queue, consumed in
 order as events are written) and keeps only what it needs to decide:
 
-- `due(now_ms)`: the Triggers that fire now: a finished Run (after its delay; `stuck` instead
+- `due(now_ms)`: the Triggers that fire now: the reply to the Candidate's speech once it has
+  settled (see below), a finished Run (after its delay; `stuck` instead
   when that Run makes the Candidate look stuck), time checkpoints, Phase overrun, a coding pause
   and silence. Each fires once per occasion: one reaction per Run, one silence Trigger per
   silence, each checkpoint once, one overrun per stay in a Phase, one coding pause per chunk.
+- Speech settles before it is answered: speech recognition finalizes an utterance at every short
+  pause, so one spoken thought arrives as several fragments. The `utterance` Trigger fires only
+  once the Candidate has been quiet for `utterance_settle_s` after their last fragment (and is
+  not speaking), so the fragments share one decision call; it carries any waiting Run reaction.
 - `merge_waiting()`: a Run reaction still waiting, taken to ride along with a reply to the
   Candidate instead of firing on its own.
 - `suppression(trigger, now_ms)`: whether the guardrails hold back a call for `trigger` right
@@ -176,6 +181,8 @@ class TriggerConfig:
     muted_silence_multiplier: float = 2
     """While the mic is muted, silence counts only code activity, with thresholds this many
     times longer."""
+    utterance_settle_s: float = 1.5
+    """Quiet after the Candidate's last spoken fragment before their speech is answered."""
 
     def to_settings(self) -> dict[str, Any]:
         return {
@@ -187,6 +194,7 @@ class TriggerConfig:
             "coding_pause_lines": self.coding_pause_lines,
             "coding_pause_idle_s": self.coding_pause_idle_s,
             "muted_silence_multiplier": self.muted_silence_multiplier,
+            "utterance_settle_s": self.utterance_settle_s,
         }
 
     @classmethod
@@ -213,6 +221,7 @@ class TriggerConfig:
             muted_silence_multiplier=float(
                 value.get("muted_silence_multiplier", default.muted_silence_multiplier)
             ),
+            utterance_settle_s=float(value.get("utterance_settle_s", default.utterance_settle_s)),
         )
 
 
@@ -271,6 +280,7 @@ class TriggerEngine:
         self._last_code_activity_ms = 0  # also mic toggles: what a muted silence counts from
         self._muted = False
         self._speaking_until_ms = 0
+        self._speech_settles_ms: int | None = None  # spoken words awaiting a reply settle then
         self._last_interviewer_ms: int | None = None
         self._silence_open = True  # no silence Trigger has fired since the last activity
         self._checkpoints: set[TimeCheckpoint] = set()
@@ -305,6 +315,9 @@ class TriggerEngine:
         elif event.type == "utterance" and p.get("channel") == "voice":
             # a final utterance ends the speech it came from (speech after it says so anew)
             self._speaking_until_ms = min(self._speaking_until_ms, event.t_ms)
+            self._speech_settles_ms = event.t_ms + round(self._config.utterance_settle_s * 1000)
+        elif event.type == "utterance":  # typed: answered at once, covering any speech before it
+            self._speech_settles_ms = None
         elif event.type in ("mic_muted", "mic_unmuted"):
             self._muted = event.type == "mic_muted"
             if self._muted:  # a muted mic hears nothing: the Candidate isn't speaking
@@ -335,6 +348,7 @@ class TriggerEngine:
         self._pause_base = self._code
         self._last_activity_ms = self._last_code_activity_ms = now_ms
         self._silence_open = True
+        self._speech_settles_ms = None
 
     def set_speaking(self, active: bool, now_ms: int) -> None:
         """The Candidate's interim speech (`active`), or its end. Speech counts for
@@ -351,10 +365,19 @@ class TriggerEngine:
         return now_ms < self._speaking_until_ms
 
     def due(self, now_ms: int) -> list[Trigger]:
-        """The proactive Triggers that fire at `now_ms`; each is marked fired. Nothing fires
+        """The Triggers that fire at `now_ms`; each is marked fired. While the Candidate's speech
+        is settling nothing fires (it all rides along with the reply); once it has settled, the
+        `utterance` Trigger leads, with any waiting Run reaction. No proactive Trigger fires
         before the timer starts or once time is up."""
+        if self._speech_settles_ms is not None:
+            if now_ms < self._speech_settles_ms or self.speaking(now_ms):
+                return []
+            self._speech_settles_ms = None
+            reply = [Trigger("utterance"), *self.merge_waiting()]
+        else:
+            reply = []
         if self._timer_started_ms is None or self._stopped:
-            return []
+            return reply
         fresh = [
             *self._time_checkpoints(now_ms),
             *self._run_finished(now_ms),
@@ -370,7 +393,7 @@ class TriggerEngine:
         ]
         retried = [t for t in self._held_back if self.suppression(t, now_ms) is None]
         self._held_back = [t for t in self._held_back if t not in retried]
-        return [*retried, *fresh]
+        return [*reply, *retried, *fresh]
 
     def merge_waiting(self) -> list[Trigger]:
         """The reaction to the last Run, still waiting for its delay or held back by the

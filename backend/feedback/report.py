@@ -350,7 +350,7 @@ def _key_snapshot_seqs(events: Sequence[Event], correctness: Event | None) -> se
 
 
 # Operator data about the Interviewer's own decisions (for tuning), not Candidate evidence.
-NOT_IN_TIMELINE = frozenset({"trigger"})
+NOT_IN_TIMELINE = frozenset({"trigger", "model_usage"})
 
 
 def _timeline_entry(event: Event, full_snapshots: set[int]) -> str:

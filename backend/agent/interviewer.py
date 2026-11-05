@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from backend.agent.context import build_turn_message, next_hint_level
-from backend.agent.model import ModelClient, ModelRequest, TextDelta, ToolCall
+from backend.agent.model import ModelClient, ModelRequest, TextDelta, ToolCall, Usage
 from backend.agent.triggers import Trigger
 from backend.db import Event
 from backend.phases import PHASES
@@ -147,6 +147,8 @@ class Decision:
     """The Hint given this turn; its text is part of `text`."""
     notes: list[str] = field(default_factory=list)
     """Private observations for the Report."""
+    usage: Usage | None = None
+    """The call's token usage, as the model client reported it."""
 
 
 def _clarification(value: dict[str, Any]) -> Clarification | None:
@@ -197,14 +199,17 @@ class Interviewer:
             model=self._model_id,
             system=self._system,
             messages=[
-                {"role": "user", "content": build_turn_message(
+                {
+                    "role": "user",
+                    "content": build_turn_message(
                         events,
                         now_ms=now_ms,
                         remaining_ms=remaining_ms,
                         phase_lock_ms=phase_lock_ms,
                         trigger=trigger,
                         coalesced=coalesced,
-                    )}
+                    ).content(),
+                }
             ],
             tools=TOOLS,
             max_tokens=DECISION_MAX_TOKENS,
@@ -216,13 +221,14 @@ class Interviewer:
         silent_reason: str | None = None
         hint: Hint | None = None
         notes: list[str] = []
+        usage: Usage | None = None
         async for event in self._model.stream(request):
             if isinstance(event, TextDelta):
                 if event.text:
                     text.append(event.text)
                     await on_text(event.text)
-            elif not isinstance(event, ToolCall):
-                continue  # Usage: logged by the client
+            elif isinstance(event, Usage):
+                usage = event
             elif event.name == RECORD_CLARIFICATION["name"]:
                 if (clarification := _clarification(event.input)) is not None:
                     clarifications.append(clarification)
@@ -265,4 +271,5 @@ class Interviewer:
             silent_reason=silent_reason,
             hint=hint,
             notes=notes,
+            usage=usage,
         )

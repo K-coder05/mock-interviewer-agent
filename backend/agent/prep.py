@@ -7,10 +7,11 @@ the call retried once. If both attempts fail, `PrepFailed` is raised and no Sess
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from backend.agent.model import ModelClient, ModelError, ModelRequest, ToolCall
+from backend.agent.model import ModelClient, ModelError, ModelRequest, ToolCall, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,29 @@ ProblemBrief = dict[str, Any]
 PREP_PROMPT = (Path(__file__).parent / "prompts" / "prep.md").read_text()
 PREP_MAX_TOKENS = 16_000
 ATTEMPTS = 2  # one retry
+
+
+@dataclass(frozen=True)
+class PreparedBrief:
+    brief: ProblemBrief
+    usage: Usage
+    """Token usage summed over every attempt (a failed attempt costs tokens too); `model` is
+    the model that served the accepted one."""
+    attempts: int
+
+
+def _sum_usage(total: Usage | None, usage: Usage) -> Usage:
+    if total is None:
+        return usage
+    return Usage(
+        model=usage.model,
+        input_tokens=total.input_tokens + usage.input_tokens,
+        output_tokens=total.output_tokens + usage.output_tokens,
+        cache_read_input_tokens=total.cache_read_input_tokens + usage.cache_read_input_tokens,
+        cache_creation_input_tokens=(
+            total.cache_creation_input_tokens + usage.cache_creation_input_tokens
+        ),
+    )
 
 
 class PrepFailed(Exception):
@@ -114,7 +138,7 @@ async def prepare_problem_brief(
     problem_md: str,
     starter_code: str | None,
     private_notes: str | None,
-) -> ProblemBrief:
+) -> PreparedBrief:
     request = ModelRequest(
         model=model_id,
         system=PREP_PROMPT,
@@ -125,9 +149,15 @@ async def prepare_problem_brief(
         max_tokens=PREP_MAX_TOKENS,
         effort="high",
     )
+    usage: Usage | None = None
     for attempt in range(1, ATTEMPTS + 1):
+        calls: list[ToolCall] = []
         try:
-            calls = [e async for e in model.stream(request) if isinstance(e, ToolCall)]
+            async for event in model.stream(request):
+                if isinstance(event, Usage):
+                    usage = _sum_usage(usage, event)
+                elif isinstance(event, ToolCall):
+                    calls.append(event)
         except ModelError as exc:
             logger.warning("problem prep attempt %d failed: %s (%s)", attempt, exc.message, exc.code)
             continue
@@ -136,6 +166,6 @@ async def prepare_problem_brief(
             continue
         for call in calls:
             if call.name == BRIEF_TOOL["name"] and (brief := validate_brief(call.input)):
-                return brief
+                return PreparedBrief(brief, usage or Usage(model_id, 0, 0), attempt)
         logger.warning("problem prep attempt %d returned no valid Problem Brief", attempt)
     raise PrepFailed("The Interviewer could not prepare the problem. Please try again.")

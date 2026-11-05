@@ -19,7 +19,7 @@ from backend.clock import Clock, SystemClock
 from backend.config import Config, load_config
 from backend.db import Store
 from backend.feedback.generator import ReportGenerator
-from backend.history import delete_session, export_jsonl, list_history, replay
+from backend.history import delete_session, export_jsonl, list_history, replay, session_usage
 from backend.runner import Runner
 from backend.session import ServerMessage, SessionDefaults, SessionManager
 
@@ -111,6 +111,14 @@ def create_app(
     @app.get("/api/sessions/{session_id}/replay")
     def get_replay(session_id: str) -> dict[str, Any]:
         data = replay(store, session_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return data
+
+    @app.get("/api/sessions/{session_id}/usage")
+    def get_usage(session_id: str) -> dict[str, Any]:
+        """Tokens and estimated USD cost of the Session's model calls, per purpose."""
+        data = session_usage(store, session_id)
         if data is None:
             raise HTTPException(status_code=404, detail="Session not found")
         return data

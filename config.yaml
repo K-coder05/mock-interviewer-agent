@@ -13,6 +13,7 @@ interview:
   coding_pause_lines: 25      # lines changed since the last walkthrough request...
   coding_pause_idle_s: 30     # ...then this long without an edit or Run
   muted_silence_multiplier: 2
+  utterance_settle_s: 1.5     # quiet after a spoken fragment before it is answered (fragments of one thought share one call)
   user_phase_lock_s: 120
   timeout_grace_s: 60
   abandon_after_idle_min: 10

@@ -180,15 +180,19 @@ async def test_a_spoken_reply_waits_for_the_candidate_to_finish(
     await harness.speaking(session_id)
     release.set()
     await harness.wait_for_interviewer(session_id)
+    await harness.elapse(session_id, 1)  # still talking: their speech has not settled
 
     assert [(t["reason"], t["outcome"]) for t in _triggers(harness, session_id)] == [
         ("typed_message", "spoke"),
-        ("utterance", "suppressed"),
     ]
-    harness.advance(3)
-    harness.model.script("Yes, ascending.")  # their next utterance asks again
-    await harness.speak(session_id, "or descending")
-    assert _triggers(harness, session_id)[-1]["outcome"] == "spoke"
+    harness.model.script("Yes, ascending.")
+    await harness.speak(session_id, "or descending")  # then they finish and go quiet
+    assert [(t["reason"], t["outcome"]) for t in _triggers(harness, session_id)] == [
+        ("typed_message", "spoke"),
+        ("utterance", "spoke"),  # one reply to both fragments
+    ]
+    turn = str(harness.model.requests[-1].messages)
+    assert "I mean ascending" in turn and "or descending" in turn
 
 
 async def test_a_run_reaction_merged_into_a_held_back_spoken_reply_is_not_lost(
@@ -201,20 +205,22 @@ async def test_a_run_reaction_merged_into_a_held_back_spoken_reply_is_not_lost(
     await harness.finish_run(session_id)
     await harness.speaking(session_id)  # still talking when the utterance's reply would start
     await harness.send(session_id, "utterance", text="hmm", channel="voice", start_ms=0, end_ms=1)
-    await harness.speaking(session_id)
-    await harness.wait_for_interviewer(session_id)
-    assert [(t["reason"], t.get("suppressed_by")) for t in _triggers(harness, session_id)] == [
-        ("utterance", "speaking")
-    ]
+    for _ in range(4):  # past the Run's delay, but still talking (interim results keep coming)
+        await harness.speaking(session_id)
+        await harness.elapse(session_id, 1)
+    assert _triggers(harness, session_id) == []  # the Run's reaction waits for the speech
 
     harness.model.script("What did you expect that to print?")
-    await harness.elapse(session_id, 2)  # quiet again: the Run still gets its reaction
-    assert _triggers(harness, session_id)[-1] == {
-        "reason": "run",
-        "detail": "failed",
-        "proactive": True,
-        "outcome": "spoke",
-    }
+    await harness.send(session_id, "speaking", active=False)
+    await harness.elapse(session_id, 2)  # quiet again: one reply, carrying the Run's reaction
+    assert _triggers(harness, session_id) == [
+        {
+            "reason": "utterance",
+            "proactive": False,
+            "coalesced": [{"reason": "run", "detail": "failed"}],
+            "outcome": "spoke",
+        }
+    ]
 
 
 async def test_a_typed_message_is_answered_even_while_speech_is_detected(
@@ -225,6 +231,74 @@ async def test_a_typed_message_is_answered_even_while_speech_is_detected(
     harness.model.script("Yes, it is sorted.")
     await harness.say(session_id, "is it sorted?")
     assert _triggers(harness, session_id)[-1]["outcome"] == "spoke"
+
+
+# --- settling: fragments of one spoken thought share one decision call -------------------------
+
+
+async def test_fragments_inside_the_settle_window_get_one_decision_call(
+    harness: LiveSessionHarness,
+) -> None:
+    session_id = await _connected(harness)
+    calls = len(harness.model.requests)
+
+    await harness.speak(session_id, "I think I want to", settle=False)
+    harness.advance(1.0)  # a short pause: speech recognition finalized the fragment
+    await harness.speak(session_id, "use a sorted", settle=False)
+    harness.advance(0.5)
+    harness.model.script("What would the keys be?")
+    await harness.speak(session_id, "dictionary if that makes sense")
+
+    assert len(harness.model.requests) == calls + 1
+    turn = str(harness.model.requests[-1].messages)
+    assert "I think I want to" in turn and "dictionary if that makes sense" in turn
+    assert [t["reason"] for t in _triggers(harness, session_id)] == ["utterance"]
+
+
+async def test_nothing_is_sent_before_the_speech_settles(harness: LiveSessionHarness) -> None:
+    session_id = await _connected(harness)
+    calls = len(harness.model.requests)
+
+    await harness.speak(session_id, "so the capacity is", settle=False)
+    await harness.elapse(session_id, harness.settle_s(session_id) - 0.25)
+    assert len(harness.model.requests) == calls
+
+    harness.model.script("Yes, always positive.")
+    await harness.elapse(session_id, 0.25)
+    assert len(harness.model.requests) == calls + 1
+
+
+async def test_a_pause_longer_than_the_settle_window_is_answered_on_its_own(
+    harness: LiveSessionHarness,
+) -> None:
+    session_id = await _connected(harness)
+    harness.model.script(ToolCall("stay_silent", {"reason": "mid-thought"}))
+    await harness.speak(session_id, "let me think")
+    harness.model.script("Go on.")
+    await harness.speak(session_id, "okay I have an idea")
+
+    assert [(t["reason"], t["outcome"]) for t in _triggers(harness, session_id)] == [
+        ("utterance", "silent"),
+        ("utterance", "spoke"),
+    ]
+
+
+async def test_a_typed_message_answers_speech_still_settling(harness: LiveSessionHarness) -> None:
+    session_id = await _connected(harness)
+    await harness.speak(session_id, "one more thing", settle=False)
+    harness.model.script("Sure, go ahead.")
+    await harness.say(session_id, "can I ask about inputs?")
+    await harness.elapse(session_id, 5)  # the spoken fragment gets no second reply
+
+    assert [t["reason"] for t in _triggers(harness, session_id)] == ["typed_message"]
+    assert "one more thing" in str(harness.model.requests[-1].messages)
+
+
+def test_the_settle_window_comes_from_config() -> None:
+    from backend.agent.triggers import TriggerConfig
+
+    assert TriggerConfig.from_settings({"utterance_settle_s": 2.5}).utterance_settle_s == 2.5
+    assert TriggerConfig.from_settings({}).utterance_settle_s == 1.5
 
 
 # --- muting ------------------------------------------------------------------------------------

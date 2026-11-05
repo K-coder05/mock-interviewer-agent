@@ -53,26 +53,61 @@ export interface CreateSessionInput {
   autocomplete: boolean;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = await response.json();
-      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-    } catch {
-      // keep statusText
-    }
-    throw new Error(`${response.status}: ${detail}`);
+/** Ordinary API calls answer in well under a second; this only catches a hung or absent backend. */
+export const DEFAULT_TIMEOUT_MS = 20_000;
+/** Session creation runs problem prep against the model (with one retry) before answering. */
+export const CREATE_SESSION_TIMEOUT_MS = 150_000;
+
+export class RequestTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(
+      `The server did not respond within ${Math.round(timeoutMs / 1000)} s. ` +
+        "Check that the backend is running (make dev) and try again.",
+    );
+    this.name = "RequestTimeoutError";
   }
-  return response.json() as Promise<T>;
+}
+
+export async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    // The timer covers reading the body too, so a backend that stalls mid-response still fails.
+    const response = await fetch(path, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      } catch (err) {
+        if (controller.signal.aborted) throw err;
+        // otherwise keep statusText
+      }
+      throw new Error(`${response.status}: ${detail}`);
+    }
+    return (await response.json()) as T;
+  } catch (err) {
+    if (controller.signal.aborted) throw new RequestTimeoutError(timeoutMs);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function createSession(input: CreateSessionInput): Promise<{ session_id: string }> {
-  return request("/api/sessions", { method: "POST", body: JSON.stringify(input) });
+  return request(
+    "/api/sessions",
+    { method: "POST", body: JSON.stringify(input) },
+    CREATE_SESSION_TIMEOUT_MS,
+  );
 }
 
 export function getSession(id: string): Promise<{ session: SessionInfo; events: SessionEvent[] }> {

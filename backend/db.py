@@ -189,6 +189,29 @@ class Store:
             ).fetchall()
         return [self._record(r) for r in rows]
 
+    def find_problem_brief(
+        self,
+        *,
+        problem_md: str,
+        starter_code: str | None,
+        private_notes: str | None,
+        prep_model: str,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """The Problem Brief of the newest Session prepared from exactly this problem, starter
+        code and private notes by `prep_model`, with that Session's id; None if there is none."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, problem_brief_json FROM sessions"
+                " WHERE problem_md = ? AND starter_code IS ? AND private_notes IS ?"
+                " AND problem_brief_json IS NOT NULL"
+                " AND json_extract(settings_json, '$.models.prep') = ?"
+                " ORDER BY created_at DESC LIMIT 1",
+                (problem_md, starter_code, private_notes, prep_model),
+            ).fetchone()
+        if row is None:
+            return None
+        return row["id"], json.loads(row["problem_brief_json"])
+
     @staticmethod
     def _record(row: sqlite3.Row) -> SessionRecord:
         brief = row["problem_brief_json"]

@@ -20,7 +20,7 @@ from typing import Any, Literal, get_args
 from backend.agent.context import Style, build_system_prompt
 from backend.agent.interviewer import Decision, Interviewer
 from backend.agent.triggers import Trigger, TriggerConfig, TriggerEngine, coalesce
-from backend.agent.model import ModelClient, ModelError
+from backend.agent.model import ModelClient, ModelError, Usage
 from backend.agent.prep import prepare_problem_brief
 from backend.clock import Clock
 from backend.config import ModelIds, VoiceConfig
@@ -30,6 +30,7 @@ from backend.feedback.generator import ReportGenerator
 from backend.ids import new_id
 from backend.phases import PHASES, ChangedBy, current as current_phase
 from backend.runner import Runner
+from backend.usage import usage_payload
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,13 @@ CHANNELS: tuple[Channel, ...] = get_args(Channel)
 ServerMessage = dict[str, Any]
 Listener = Callable[[ServerMessage], Awaitable[None]]
 TimerState = Literal["running", "warning", "time_up", "ended"]
-PRIVATE_EVENTS = frozenset({"interviewer_note"})  # never sent to the client live
+# never sent to the client live: private notes, and per-call token usage
+PRIVATE_EVENTS = frozenset({"interviewer_note", "model_usage"})
 
 CLOSING_TIMEOUT_S = 30
 PASTE_TEXT_CAP = 5_000  # stored text of a paste event; `length` keeps the real size
 WARNING_MS = 5 * 60_000  # the timer turns red with this much time left
+TICK_S = 0.25  # timer and Trigger polling: fine enough that settled speech is answered promptly
 
 __all__ = ["LiveSession", "ServerMessage", "SessionDefaults", "SessionManager", "Style"]
 
@@ -92,7 +95,7 @@ class LiveSession:
         runner: Runner,
         model: ModelClient,
         on_ended: Callable[[str], object] | None = None,
-        timer_poll_s: float | None = 1.0,
+        timer_poll_s: float | None = TICK_S,
     ) -> None:
         self.record = record
         self._on_ended = on_ended
@@ -147,8 +150,9 @@ class LiveSession:
 
         return unsubscribe
 
-    def begin(self) -> None:
-        """Record the Session's opening events at t=0: session_started, then any starter code."""
+    def begin(self, prep_usage: dict[str, Any] | None = None) -> None:
+        """Record the Session's opening events at t=0: session_started, then any starter code,
+        then problem prep's `model_usage` (`prep_usage`, its payload)."""
         record = self.record
         self._append(
             "session_started",
@@ -161,6 +165,8 @@ class LiveSession:
         )
         if record.starter_code is not None:
             self._snapshot(record.starter_code, t_ms=0)
+        if prep_usage is not None:
+            self._append("model_usage", prep_usage, t_ms=0)
 
     def resume(self) -> None:
         """Rebuild the Session from its event log after a backend restart. Time carries on from
@@ -443,8 +449,8 @@ class LiveSession:
         await self._emit({"type": "phase", "phase": phase, "by": by, "seq": event.seq})
 
     async def _on_utterance(self, message: dict[str, Any]) -> None:
-        """A typed message (always gets a reply) or a final spoken utterance (heard; the
-        Interviewer decides whether to respond). A spoken utterance's `start_ms`/`end_ms` are
+        """A typed message (always gets a reply, at once) or a final spoken utterance (heard; once
+        the Candidate's speech settles the Interviewer decides whether to respond). A spoken utterance's `start_ms`/`end_ms` are
         in the browser's clock: only its length is kept, ending now."""
         text, channel = message.get("text"), message.get("channel", "text")
         if not isinstance(text, str) or not text.strip() or channel not in CHANNELS:
@@ -460,8 +466,11 @@ class LiveSession:
             if isinstance(client_start, (int, float)) and isinstance(client_end, (int, float)):
                 start = max(0, now - max(0, round(client_end - client_start)))
         self._append_utterance("user", text.strip(), start, channel=channel)
-        # a typed message always gets a reply; a spoken one is heard and may get one
-        self._request_reply(Trigger("typed_message" if channel == "text" else "utterance"))
+        if channel == "voice":
+            # Heard; the trigger engine answers (the Interviewer may stay silent) once the
+            # Candidate's speech has settled, so a thought split into fragments gets one call.
+            return
+        self._request_reply(Trigger("typed_message"))  # a typed message always gets a reply
         for trigger in self._triggers.merge_waiting():  # e.g. a Run's reaction: one reply
             self._request_reply(trigger)
 
@@ -570,6 +579,8 @@ class LiveSession:
         finally:
             if self._proactive_call is call:
                 self._proactive_call = None
+        if decision.usage is not None:
+            self._append("model_usage", usage_payload("interviewer", decision.usage))
         if trigger.reason == "session_start":
             await self._start_timer()  # even a greeting with no speech starts the Session timer
         if decision.text:
@@ -679,7 +690,7 @@ class SessionManager:
         model: ModelClient,
         reports: ReportGenerator,
         defaults: SessionDefaults,
-        timer_poll_s: float | None = 1.0,
+        timer_poll_s: float | None = TICK_S,
     ) -> None:
         self._store = store
         self._reports = reports
@@ -700,19 +711,31 @@ class SessionManager:
         duration_min: int | None = None,
         autocomplete: bool = False,
     ) -> LiveSession:
-        """Run problem prep, then persist and start the Session.
+        """Run problem prep, then persist and start the Session. A problem prepared before
+        (same statement, starter code and private notes, same prep model) reuses that
+        Session's Problem Brief instead of a new prep call.
 
         Raises PrepFailed (after prep's one retry) without creating anything.
         """
         starter = starter_code or None
         notes = (private_notes or "").strip() or None
-        brief = await prepare_problem_brief(
-            self._model,
-            model_id=self._defaults.models.prep,
-            problem_md=problem_md,
-            starter_code=starter,
-            private_notes=notes,
+        prep_model = self._defaults.models.prep
+        earlier = self._store.find_problem_brief(
+            problem_md=problem_md, starter_code=starter, private_notes=notes, prep_model=prep_model
         )
+        if earlier is not None:
+            reused_from, brief = earlier
+            prep_usage = usage_payload("prep", Usage(prep_model, 0, 0), reused_from=reused_from)
+        else:
+            prepared = await prepare_problem_brief(
+                self._model,
+                model_id=prep_model,
+                problem_md=problem_md,
+                starter_code=starter,
+                private_notes=notes,
+            )
+            brief = prepared.brief
+            prep_usage = usage_payload("prep", prepared.usage, attempts=prepared.attempts)
         settings: dict[str, Any] = {
             "duration_min": duration_min or self._defaults.duration_min,
             "timeout_grace_s": self._defaults.timeout_grace_s,
@@ -733,7 +756,7 @@ class SessionManager:
             created_at=datetime.fromtimestamp(self._clock.wall_ms() / 1000, timezone.utc),
         )
         live = self._live[record.id] = self._live_session(record)
-        live.begin()
+        live.begin(prep_usage)
         return live
 
     def live(self, session_id: str) -> LiveSession | None:

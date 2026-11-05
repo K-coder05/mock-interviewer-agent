@@ -1,8 +1,12 @@
 """Builds the Interviewer's prompt: a stable system prompt and a per-call turn message.
 
 The system prompt (rules, persona, problem, private notes, Problem Brief) never changes during a
-Session, so it is prompt-cached. Everything that changes is rebuilt from the event log on every
-decision call; there is no running message history.
+Session, so it is prompt-cached. The turn message is rebuilt from the event log on every decision
+call (there is no running message history), but it leads with the transcript, which only ever
+grows: each transcript line is its own content block and the last one carries a cache marker, so
+each call reads the transcript so far from the cache and pays full price only for the lines added
+since the last call and for the state after it (time, Phase, code, Runs, the Trigger), which
+changes every call.
 """
 
 from __future__ import annotations
@@ -126,6 +130,37 @@ def next_hint_level(events: Sequence[Event]) -> int:
     return min(last + 1, MAX_HINT_LEVEL)
 
 
+TRANSCRIPT_OPEN = "<transcript>\n"
+
+
+@dataclass(frozen=True)
+class TurnMessage:
+    """The single user message of a decision call: the transcript lines (append-only across a
+    Session: the prompt-cached part) and the state after them (rebuilt on every call)."""
+
+    transcript: list[str]
+    state: str
+
+    def content(self) -> list[dict[str, Any]]:
+        """Content blocks: the transcript opener, one block per transcript line (the last one
+        marked for caching) and the state. Earlier lines keep their bytes and positions from
+        call to call, so the previous call's cache entry is a prefix of this one."""
+        lines: list[dict[str, Any]] = [
+            {"type": "text", "text": line + "\n"} for line in self.transcript
+        ]
+        if lines:
+            lines[-1]["cache_control"] = {"type": "ephemeral"}
+        return [
+            {"type": "text", "text": TRANSCRIPT_OPEN},
+            *lines,
+            {"type": "text", "text": self.state},
+        ]
+
+    def text(self) -> str:
+        """The whole message as one string (what the model reads)."""
+        return "".join(block["text"] for block in self.content())
+
+
 def build_turn_message(
     events: Sequence[Event],
     *,
@@ -134,7 +169,7 @@ def build_turn_message(
     coalesced: Sequence[Trigger] = (),
     remaining_ms: int | None = None,
     phase_lock_ms: int = 0,
-) -> str:
+) -> TurnMessage:
     """The single user message for a decision call, derived only from the event log."""
     clarifications: list[str] = []
     transcript: list[str] = []
@@ -189,8 +224,9 @@ def build_turn_message(
         f"stderr:\n{_clip(r.payload['stderr']) or '(empty)'}"
         for r in runs[-3:]
     ]
-    return "\n\n".join(
+    state = "\n\n".join(
         [
+            ("" if transcript else "(nothing said yet)\n") + "</transcript>",
             f"<elapsed>{_clock(now_ms)}</elapsed>",
             *([] if remaining_ms is None else [f"<time_left>{_clock(max(0, remaining_ms))}</time_left>"]),
             "<phase>\n" + "\n".join(phase_lines) + "\n</phase>",
@@ -199,7 +235,6 @@ def build_turn_message(
             + "\n".join([*hints, f"The next Hint is L{next_hint_level(events)}."])
             + "\n</hints_given>",
             "<your_notes>\n" + ("\n".join(notes) or "(none yet)") + "\n</your_notes>",
-            "<transcript>\n" + ("\n".join(transcript) or "(nothing said yet)") + "\n</transcript>",
             "<current_code>\n" + (numbered or "(empty)") + "\n</current_code>",
             "<last_diff>\nThe candidate's edits since you last spoke:\n"
             + (_clip(_diff(code_when_you_spoke, code)) or "(none)")
@@ -213,3 +248,4 @@ def build_turn_message(
             + "</trigger>",
         ]
     )
+    return TurnMessage(transcript=transcript, state=state)

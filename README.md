@@ -21,6 +21,11 @@ make dev                # backend on :8000 + Vite on :5173 (proxies /api and /ws
 The backend refuses to start, with a clear message, if `ANTHROPIC_API_KEY` is missing.
 Tunables live in `config.yaml`; the SQLite database is `data/interviews.db` (gitignored).
 
+API usage: every model call's tokens are stored (prep and Interviewer calls as private
+`model_usage` events, the Report on its row); `GET /api/sessions/{id}/usage` sums them per
+purpose with an estimated cost (prices in `backend/usage.py`). Re-running a problem with the same
+statement, starter code and private notes reuses its earlier Problem Brief (no prep call).
+
 ## Development
 
 ```bash

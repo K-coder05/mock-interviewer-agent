@@ -13,7 +13,7 @@ async def test_creating_a_session_persists_it_live_and_emits_session_started(
     assert session.status == "live"
     assert session.title == "Two Sum"
     events = harness.events(session_id)
-    assert [e.type for e in events] == ["session_started"]
+    assert [e.type for e in events] == ["session_started", "model_usage"]
     assert events[0].seq == 1
     assert events[0].t_ms == 0
     assert events[0].payload["problem_md"] == "# Two Sum\n\nFind two numbers."
@@ -26,7 +26,7 @@ async def test_starter_code_is_the_first_code_snapshot_at_t0(harness: LiveSessio
     session_id = await harness.start(starter_code="def two_sum(nums, target):\n    pass\n")
 
     events = harness.events(session_id)
-    assert [e.type for e in events] == ["session_started", "code_snapshot"]
+    assert [e.type for e in events] == ["session_started", "code_snapshot", "model_usage"]
     snapshot = events[1]
     assert snapshot.t_ms == 0
     assert snapshot.seq == 2
@@ -52,7 +52,8 @@ async def test_code_updates_record_each_distinct_buffer_with_server_seq_and_t_ms
     await harness.send(session_id, "code_update", code="def f():\n    return 42\n")
 
     snapshots = harness.events(session_id, "code_snapshot")
-    assert [(s.seq, s.t_ms) for s in snapshots] == [(2, 0), (3, 12_500), (4, 24_000)]
+    # seq 3 is problem prep's model_usage, logged at t=0 after the starter snapshot
+    assert [(s.seq, s.t_ms) for s in snapshots] == [(2, 0), (4, 12_500), (5, 24_000)]
     assert [s.payload["code"] for s in snapshots] == [
         "def f():\n    pass\n",
         "def f():\n    return 1\n",
@@ -80,7 +81,7 @@ async def test_unknown_messages_get_an_error_and_no_event(harness: LiveSessionHa
     await harness.send(session_id, "teleport")
 
     assert [m["code"] for m in harness.messages(session_id, "error")] == ["unknown_message"]
-    assert [e.type for e in harness.events(session_id)] == ["session_started"]
+    assert [e.type for e in harness.events(session_id)] == ["session_started", "model_usage"]
 
 
 async def test_run_forces_a_snapshot_and_the_run_event_references_its_seq(
@@ -93,8 +94,14 @@ async def test_run_forces_a_snapshot_and_the_run_event_references_its_seq(
     await harness.finish_run(session_id)
 
     events = harness.events(session_id)
-    assert [e.type for e in events] == ["session_started", "code_snapshot", "code_snapshot", "run"]
-    snapshot, run = events[2], events[3]
+    assert [e.type for e in events] == [
+        "session_started",
+        "code_snapshot",
+        "model_usage",
+        "code_snapshot",
+        "run",
+    ]
+    snapshot, run = events[3], events[4]
     assert snapshot.payload["code"] == "print('new')\n"
     assert run.payload["snapshot_seq"] == snapshot.seq
     assert run.payload["stdout"] == "new\n"

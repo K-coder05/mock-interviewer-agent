@@ -238,10 +238,14 @@ class LiveSessionHarness:
         assert live is not None
         await live.wait_for_interviewer()
 
-    async def speak(self, session_id: str, text: str, *, duration_s: float = 2.0) -> None:
+    async def speak(
+        self, session_id: str, text: str, *, duration_s: float = 2.0, settle: bool = True
+    ) -> None:
         """Say something out loud: the client ends the speaking state, then sends the final
-        utterance (timed in the browser's clock, which differs from the Session's); waits for
-        any reply."""
+        utterance (timed in the browser's clock, which differs from the Session's). With
+        `settle`, the Candidate then stays quiet for the settle window, so the speech is
+        answered; waits for any reply. `settle=False` leaves the speech settling (another
+        fragment may follow)."""
         start = 5_000_000.0  # an arbitrary client clock reading
         await self.send(session_id, "speaking", active=False)
         await self.send(
@@ -252,7 +256,13 @@ class LiveSessionHarness:
             start_ms=start,
             end_ms=start + duration_s * 1000,
         )
+        if settle:
+            await self.elapse(session_id, self.settle_s(session_id))
         await self.wait_for_interviewer(session_id)
+
+    def settle_s(self, session_id: str) -> float:
+        """How long the Candidate's speech must settle before it is answered (per Session)."""
+        return float(self.session(session_id).settings["proactive"]["utterance_settle_s"])
 
     async def speaking(self, session_id: str, active: bool = True) -> None:
         """The client's `speaking` signal (sent from interim speech results)."""
